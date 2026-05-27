@@ -14,7 +14,7 @@ let cacheCreatedAt: number = 0;
 const CACHE_TTL_MS = 55 * 60 * 1000; // 55 min (cache lasts 1hr, renew early)
 
 function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
       'GEMINI_API_KEY is not configured. ' +

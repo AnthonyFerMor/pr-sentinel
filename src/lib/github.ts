@@ -6,14 +6,21 @@ import { Octokit } from 'octokit';
 import { PRInfo, PRMetadata, DiffFile } from './types';
 
 function getOctokit(): Octokit {
-  const token = process.env.GITHUB_TOKEN;
+  const token = process.env.PR_SENTINEL_GITHUB_TOKEN?.trim();
   if (!token) {
     throw new Error(
-      'GITHUB_TOKEN is not configured. ' +
+      'PR_SENTINEL_GITHUB_TOKEN is not configured. ' +
       'Set it in .env.local or Vercel Environment Variables.'
     );
   }
-  return new Octokit({ auth: token });
+  return new Octokit({ 
+    auth: token,
+    request: {
+      fetch: (url: string, opts: any) => {
+        return fetch(url, { ...opts, cache: 'no-store' });
+      }
+    }
+  });
 }
 
 /**

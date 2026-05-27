@@ -41,6 +41,13 @@ export async function POST(request: NextRequest) {
 
         // 2. Fetch metadata
         send({ type: 'status', message: '📥 Fetching PR metadata...' });
+        
+        console.log("=== DEBUG TOKEN ===");
+        const t = process.env.GITHUB_TOKEN;
+        console.log("Token exists?", !!t);
+        console.log("Token length:", t ? t.length : 0);
+        console.log("Token starts with:", t ? t.substring(0, 15) : "none");
+        
         const metadata = await fetchPRMetadata(prInfo);
         send({ type: 'metadata', data: metadata });
         send({ type: 'status', message: `✅ "${metadata.title}" by ${metadata.author}` });
