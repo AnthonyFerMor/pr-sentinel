@@ -531,7 +531,13 @@ export async function scoutHotspots(
       });
 
       const text = (response as { text?: string }).text ?? '';
-      const parsed = JSON.parse(text) as { hotspots?: unknown };
+      let parsed: { hotspots?: unknown };
+      try {
+        parsed = JSON.parse(text) as { hotspots?: unknown };
+      } catch (jsonErr) {
+        console.warn(`[scout] Invalid JSON from ${modelName}:`, jsonErr);
+        continue;
+      }
       if (Array.isArray(parsed.hotspots)) {
         return parsed.hotspots.filter(
           (h): h is Hotspot =>
@@ -544,7 +550,7 @@ export async function scoutHotspots(
       }
       return [];
     } catch (error) {
-      console.warn(`Scout pass failed for ${modelName}:`, extractProviderError(error).message);
+      console.warn(`[scout] Pass failed for ${modelName}:`, extractProviderError(error).message);
       continue;
     }
   }

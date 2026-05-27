@@ -32,11 +32,15 @@ function parseRepoList(): { owner: string; repo: string }[] {
 
 export async function GET(request: NextRequest) {
   const secret = process.env.CRON_SECRET?.trim();
-  if (secret) {
-    const auth = request.headers.get('authorization');
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!secret) {
+    return NextResponse.json(
+      { error: 'CRON_SECRET is not configured on this server.' },
+      { status: 500 }
+    );
+  }
+  const auth = request.headers.get('authorization');
+  if (auth !== `Bearer ${secret}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const repos = parseRepoList();
@@ -77,11 +81,18 @@ export async function GET(request: NextRequest) {
     for (const pr of pending) {
       if (reviewed >= MAX_PRS_PER_RUN) break;
 
+      const remainingMs = maxDuration * 1000 - (Date.now() - startedAt);
+      const softDeadlineMs = remainingMs - 5000;
+      if (softDeadlineMs <= 5000) {
+        console.warn('[cron] Stopping: insufficient serverless time remaining.');
+        break;
+      }
+
       try {
         const outcome = await runReview(pr.url, {
           updateExisting: true,
           skipIfReviewed: true,
-          softDeadlineMs: (maxDuration - 5) * 1000,
+          softDeadlineMs,
         });
         reviewed += 1;
         results.push({
