@@ -389,7 +389,7 @@ async function* generateWithRetry(
 
   for (const [modelIndex, modelName] of candidates.entries()) {
     if (modelIndex > 0) {
-      onStatus?.(`Primary Gemini model is still unavailable; trying fallback ${modelName}.`);
+      onStatus?.(`🔄 Trying fallback model: ${modelName}.`);
     }
 
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -419,11 +419,21 @@ async function* generateWithRetry(
           );
         }
 
+        const isRateLimit =
+          details.code === 429 ||
+          details.status?.toUpperCase() === 'RESOURCE_EXHAUSTED';
+        const hasFallback = modelIndex < candidates.length - 1;
+
+        // On rate limit: switch to the next model immediately if one is available.
+        // Waiting 30-120s on the same rate-limited model only makes sense when
+        // there's no fallback — serverless timeouts make long waits impractical.
+        if (isRateLimit && hasFallback) {
+          onStatus?.(`⚡ Rate limited on ${modelName}; switching to ${candidates[modelIndex + 1]}.`);
+          break;
+        }
+
         const hasRetryLeft = retryable && attempt < maxRetries;
         if (hasRetryLeft) {
-          const isRateLimit =
-            details.code === 429 ||
-            details.status?.toUpperCase() === 'RESOURCE_EXHAUSTED';
           const delay = retryDelayMs(attempt, isRateLimit);
           onStatus?.(
             `Gemini returned ${details.code ?? details.status ?? 'a temporary error'}; retrying ${modelName} in ${(delay / 1000).toFixed(1)}s (${attempt + 1}/${maxRetries}).`
