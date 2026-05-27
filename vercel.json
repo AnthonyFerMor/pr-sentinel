@@ -2,6 +2,18 @@
   "functions": {
     "src/app/api/review/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/webhooks/github/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/cron/route.ts": {
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 * * * *"
+    }
+  ]
 }

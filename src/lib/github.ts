@@ -10,7 +10,7 @@ import {
   RepositorySummary,
   PullRequestSummary,
 } from './types';
-import { parseReviewMarker } from './review-marker';
+import { parseReviewMarker, ReviewMarker } from './review-marker';
 
 async function withConcurrencyLimit<T>(
   tasks: (() => Promise<T>)[],
@@ -126,6 +126,53 @@ export async function postReviewComment(
     owner: pr.owner,
     repo: pr.repo,
     issue_number: pr.pullNumber,
+    body: reviewMarkdown,
+  });
+
+  return { commentUrl: data.html_url };
+}
+
+/**
+ * Busca el último comentario de PR Sentinel en un PR (identificado por su marker).
+ * Sirve para el "reply mode": en vez de postear un comentario nuevo en cada
+ * revisión, actualizamos el existente para no llenar el PR de ruido.
+ */
+export async function findLatestReviewComment(
+  pr: PRInfo
+): Promise<{ commentId: number; htmlUrl: string; marker: ReviewMarker } | null> {
+  const octokit = getOctokit();
+
+  const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner: pr.owner,
+    repo: pr.repo,
+    issue_number: pr.pullNumber,
+    per_page: 100,
+  });
+
+  let latest: { commentId: number; htmlUrl: string; marker: ReviewMarker } | null = null;
+  for (const comment of comments) {
+    const marker = parseReviewMarker(comment.body ?? '');
+    if (marker) {
+      latest = { commentId: comment.id, htmlUrl: comment.html_url, marker };
+    }
+  }
+  return latest;
+}
+
+/**
+ * Actualiza (PATCH) un comentario existente con el nuevo review markdown.
+ */
+export async function updateReviewComment(
+  pr: PRInfo,
+  commentId: number,
+  reviewMarkdown: string
+): Promise<{ commentUrl: string }> {
+  const octokit = getOctokit();
+
+  const { data } = await octokit.rest.issues.updateComment({
+    owner: pr.owner,
+    repo: pr.repo,
+    comment_id: commentId,
     body: reviewMarkdown,
   });
 
