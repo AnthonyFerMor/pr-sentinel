@@ -117,7 +117,13 @@ function getMaxRetries(): number {
   return 4;
 }
 
-function retryDelayMs(attemptIndex: number): number {
+function retryDelayMs(attemptIndex: number, isRateLimit = false): number {
+  // 429/RESOURCE_EXHAUSTED needs to wait for the rate-limit window to reset
+  // (~60s per minute on the free tier). Standard transient errors use short backoff.
+  if (isRateLimit) {
+    const rateLimitDelays = [30000, 60000, 90000, 120000, 120000];
+    return (rateLimitDelays[attemptIndex] ?? 120000) + Math.floor(Math.random() * 5000);
+  }
   const baseDelays = [900, 2200, 4500, 8000, 12000];
   const base = baseDelays[attemptIndex] ?? 12000;
   return base + Math.floor(Math.random() * 350);
@@ -415,7 +421,10 @@ async function* generateWithRetry(
 
         const hasRetryLeft = retryable && attempt < maxRetries;
         if (hasRetryLeft) {
-          const delay = retryDelayMs(attempt);
+          const isRateLimit =
+            details.code === 429 ||
+            details.status?.toUpperCase() === 'RESOURCE_EXHAUSTED';
+          const delay = retryDelayMs(attempt, isRateLimit);
           onStatus?.(
             `Gemini returned ${details.code ?? details.status ?? 'a temporary error'}; retrying ${modelName} in ${(delay / 1000).toFixed(1)}s (${attempt + 1}/${maxRetries}).`
           );
