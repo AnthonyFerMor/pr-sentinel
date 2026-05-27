@@ -239,6 +239,34 @@ A fast first-pass scan flagged these spots as most likely to contain real issues
 ${rows}`;
 }
 
+/**
+ * Construye la sección de contexto del review anterior.
+ * El modelo usa esto para: no re-reportar issues ya corregidos,
+ * confirmar cuáles siguen presentes, y enfocarse en problemas nuevos.
+ */
+function buildPreviousReviewContext(previousBody: string): string {
+  // Trim to avoid ballooning the prompt — keep the findings, drop the metadata table.
+  const trimmed = previousBody
+    .replace(/<!--[\s\S]*?-->/, '')          // strip hidden marker
+    .replace(/<details>[\s\S]*?<\/details>/gi, '') // strip metadata table
+    .trim()
+    .slice(0, 6000);                          // hard cap to avoid token blowout
+
+  return `
+## Previous PR Sentinel Review (for context)
+A previous automated review was posted on this PR. Use it to:
+- Confirm which previously-reported issues are still present in the current diff.
+- Identify issues that have been fixed since the last review and acknowledge the fix.
+- Avoid duplicating findings that are already documented and still open — reference them briefly instead of repeating the full analysis.
+- Focus your new findings on problems NOT covered by the previous review.
+
+<previous-review>
+${trimmed}
+</previous-review>
+
+`;
+}
+
 export function buildUserPrompt(
   metadata: PRMetadata,
   files: DiffFile[],
@@ -248,6 +276,7 @@ export function buildUserPrompt(
     skills?: Skill[];
     allFiles?: DiffFile[];
     focusAreas?: Hotspot[];
+    previousReviewBody?: string;
   }
 ): string {
   const cachePrimer = options?.includeCachePrimer
@@ -261,6 +290,9 @@ export function buildUserPrompt(
     : '';
   const focusAreas = options?.focusAreas && options.focusAreas.length > 0
     ? `\n${buildFocusAreas(options.focusAreas)}\n`
+    : '';
+  const previousReview = options?.previousReviewBody
+    ? buildPreviousReviewContext(options.previousReviewBody)
     : '';
 
   const filesSection = files
@@ -283,13 +315,19 @@ export function buildUserPrompt(
 
 **Description:**
 ${metadata.body || '(no description provided)'}
-${fileMap}${focusAreas}${chunkHeader}
+${fileMap}${focusAreas}${previousReview}${chunkHeader}
 ## Changed Files (full diff for this ${chunkInfo ? 'chunk' : 'PR'})
 
 ${filesSection}
 
-## READING THE DIFF
-Each diff line is prefixed with \`<lineNumber>|<marker>\` where the number is the REAL line in the new file and the marker is \`+\` (added), \`-\` (removed, no new-file number), or space (context). When you report a finding, set lineRange to those exact numbers (e.g. "L42" or "L42-L48") so it anchors to the right line on GitHub.
+## READING THE DIFF — CRITICAL RULES
+Each diff line is prefixed with \`<lineNumber>|<marker>\`:
+- \`+\` (added) — this line EXISTS in the current code. Report bugs found here.
+- \`-\` (removed) — this line was DELETED and NO LONGER EXISTS. NEVER report a bug on a \`-\` line; that code is gone.
+- space (context) — unchanged line, exists in current code.
+- \`|\` with no number prefix — hunk header, not real code.
+
+When you report a finding, set lineRange to the real line numbers of \`+\` or context lines (e.g. "L42" or "L42-L48").
 
 ## ANALYSIS INSTRUCTIONS
 Use your thinking to deeply analyze the code before producing findings. For each file:

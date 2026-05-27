@@ -139,7 +139,7 @@ export async function postReviewComment(
  */
 export async function findLatestReviewComment(
   pr: PRInfo
-): Promise<{ commentId: number; htmlUrl: string; marker: ReviewMarker } | null> {
+): Promise<{ commentId: number; htmlUrl: string; body: string; marker: ReviewMarker } | null> {
   const octokit = getOctokit();
 
   const comments = await octokit.paginate(octokit.rest.issues.listComments, {
@@ -149,11 +149,12 @@ export async function findLatestReviewComment(
     per_page: 100,
   });
 
-  let latest: { commentId: number; htmlUrl: string; marker: ReviewMarker } | null = null;
+  let latest: { commentId: number; htmlUrl: string; body: string; marker: ReviewMarker } | null = null;
   for (const comment of comments) {
-    const marker = parseReviewMarker(comment.body ?? '');
+    const body = comment.body ?? '';
+    const marker = parseReviewMarker(body);
     if (marker) {
-      latest = { commentId: comment.id, htmlUrl: comment.html_url, marker };
+      latest = { commentId: comment.id, htmlUrl: comment.html_url, body, marker };
     }
   }
   return latest;

@@ -453,6 +453,7 @@ export async function analyzeChunk(
     skills?: Skill[];
     allFiles?: DiffFile[];
     focusAreas?: Hotspot[];
+    previousReviewBody?: string;
   }
 ): Promise<{
   stream: AsyncIterable<{ text: string }>;
@@ -470,6 +471,7 @@ export async function analyzeChunk(
     skills,
     allFiles: options?.allFiles,
     focusAreas: options?.focusAreas,
+    previousReviewBody: options?.previousReviewBody,
   });
   let usageInfo: { cacheHit: boolean; cachedTokens: number; totalTokens: number } | null = null;
   let modelUsed = MODEL_NAME;

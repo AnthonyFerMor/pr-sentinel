@@ -198,17 +198,18 @@ export async function runReview(
   emit({ type: 'metadata', data: metadata });
   emit({ type: 'status', message: `✅ "${metadata.title}" by ${metadata.author}` });
 
-  // Idempotencia: ¿ya revisamos este head SHA?
-  if (options.skipIfReviewed) {
-    const existing = await findLatestReviewComment(prInfo);
-    if (existing && existing.marker.headSha === metadata.headSha) {
-      emit({
-        type: 'status',
-        message: `⏭️ Already reviewed at head ${metadata.headSha.slice(0, 8)}. Skipping.`,
-      });
-      return { review: null, skipped: true, commentUrl: existing.htmlUrl };
-    }
+  // Fetch the previous review comment once — used for idempotency check AND context.
+  const previousComment = await findLatestReviewComment(prInfo);
+
+  if (options.skipIfReviewed && previousComment?.marker.headSha === metadata.headSha) {
+    emit({
+      type: 'status',
+      message: `⏭️ Already reviewed at head ${metadata.headSha.slice(0, 8)}. Skipping.`,
+    });
+    return { review: null, skipped: true, commentUrl: previousComment.htmlUrl };
   }
+
+  const previousReviewBody = previousComment?.body;
 
   // 3. Fetch files
   emit({ type: 'status', message: '📂 Fetching changed files...' });
@@ -321,6 +322,7 @@ export async function runReview(
         skills: activeSkills,
         allFiles: processedDiff.files,
         focusAreas,
+        previousReviewBody,
       }
     );
 
