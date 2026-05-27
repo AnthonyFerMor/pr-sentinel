@@ -3,7 +3,36 @@
 // ============================================================
 
 import { Octokit } from 'octokit';
-import { PRInfo, PRMetadata, DiffFile } from './types';
+import {
+  PRInfo,
+  PRMetadata,
+  DiffFile,
+  RepositorySummary,
+  PullRequestSummary,
+} from './types';
+import { parseReviewMarker } from './review-marker';
+
+async function withConcurrencyLimit<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number
+): Promise<T[]> {
+  const results: T[] = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const taskIndex = index++;
+      results[taskIndex] = await tasks[taskIndex]();
+    }
+  }
+
+  const workers = Array(Math.min(limit, tasks.length))
+    .fill(null)
+    .map(() => worker());
+
+  await Promise.all(workers);
+  return results;
+}
 
 function getOctokit(): Octokit {
   const token = process.env.PR_SENTINEL_GITHUB_TOKEN?.trim();
@@ -16,7 +45,7 @@ function getOctokit(): Octokit {
   return new Octokit({ 
     auth: token,
     request: {
-      fetch: (url: string, opts: any) => {
+      fetch: (url: string, opts: RequestInit) => {
         return fetch(url, { ...opts, cache: 'no-store' });
       }
     }
@@ -41,6 +70,8 @@ export async function fetchPRMetadata(pr: PRInfo): Promise<PRMetadata> {
     author: data.user?.login ?? 'unknown',
     baseBranch: data.base.ref,
     headBranch: data.head.ref,
+    headSha: data.head.sha,
+    htmlUrl: data.html_url,
     filesChanged: data.changed_files,
     additions: data.additions,
     deletions: data.deletions,
@@ -99,6 +130,88 @@ export async function postReviewComment(
   });
 
   return { commentUrl: data.html_url };
+}
+
+export async function listAccessibleRepositories(): Promise<RepositorySummary[]> {
+  const octokit = getOctokit();
+
+  const repos = await octokit.paginate(octokit.rest.repos.listForAuthenticatedUser, {
+    affiliation: 'owner,collaborator,organization_member',
+    sort: 'updated',
+    per_page: 100,
+  });
+
+  return repos.map((repo) => ({
+    id: repo.id,
+    owner: repo.owner.login,
+    name: repo.name,
+    fullName: repo.full_name,
+    private: repo.private,
+    htmlUrl: repo.html_url,
+    defaultBranch: repo.default_branch,
+    updatedAt: repo.updated_at ?? null,
+    description: repo.description ?? null,
+  }));
+}
+
+export async function listOpenPullRequests(
+  owner: string,
+  repo: string
+): Promise<PullRequestSummary[]> {
+  const octokit = getOctokit();
+
+  const pulls = await octokit.paginate(octokit.rest.pulls.list, {
+    owner,
+    repo,
+    state: 'open',
+    sort: 'updated',
+    direction: 'desc',
+    per_page: 100,
+  });
+
+  const withReviewState = await withConcurrencyLimit(
+    pulls.map((pull) => async () => {
+      const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+        owner,
+        repo,
+        issue_number: pull.number,
+        per_page: 100,
+      });
+
+      const sentinelComments = comments
+        .map((comment) => ({
+          htmlUrl: comment.html_url,
+          marker: parseReviewMarker(comment.body ?? ''),
+        }))
+        .filter((comment) => comment.marker !== null);
+
+      const lastReview = sentinelComments.at(-1);
+      const lastReviewSha = lastReview?.marker?.headSha ?? null;
+      const reviewState =
+        lastReviewSha === null
+          ? 'needs_review'
+          : lastReviewSha === pull.head.sha
+            ? 'reviewed'
+            : 'needs_update';
+
+      return {
+        number: pull.number,
+        title: pull.title,
+        author: pull.user?.login ?? 'unknown',
+        url: pull.html_url,
+        headSha: pull.head.sha,
+        createdAt: pull.created_at,
+        updatedAt: pull.updated_at,
+        reviewState,
+        lastReviewSha,
+        lastReviewUrl: lastReview?.htmlUrl ?? null,
+        lastReviewAt: lastReview?.marker?.generatedAt ?? null,
+      } satisfies PullRequestSummary;
+    }),
+    5
+  );
+
+  return withReviewState;
 }
 
 // === File classification helpers ===

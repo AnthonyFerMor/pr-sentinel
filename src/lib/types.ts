@@ -23,6 +23,8 @@ export interface PRMetadata {
   author: string;
   baseBranch: string;
   headBranch: string;
+  headSha: string;
+  htmlUrl: string;
   filesChanged: number;
   additions: number;
   deletions: number;
@@ -87,7 +89,41 @@ export interface ReviewResult {
     cacheHit: boolean;
     processingTimeMs: number;
     chunksProcessed: number;
+    partial?: boolean;
+    chunksPlanned?: number;
+    commentUrl?: string;
+    commentError?: string;
+    reviewedHeadSha?: string;
+    sourcePrUrl?: string;
   };
+}
+
+export interface RepositorySummary {
+  id: number;
+  owner: string;
+  name: string;
+  fullName: string;
+  private: boolean;
+  htmlUrl: string;
+  defaultBranch: string;
+  updatedAt: string | null;
+  description: string | null;
+}
+
+export type PullReviewState = 'needs_review' | 'needs_update' | 'reviewed';
+
+export interface PullRequestSummary {
+  number: number;
+  title: string;
+  author: string;
+  url: string;
+  headSha: string;
+  createdAt: string;
+  updatedAt: string;
+  reviewState: PullReviewState;
+  lastReviewSha: string | null;
+  lastReviewUrl: string | null;
+  lastReviewAt: string | null;
 }
 
 /**
@@ -99,6 +135,7 @@ export interface ReviewFinding {
   file: string;
   lineRange?: string;
   description: string;
+  impact?: string;
   suggestion: string;
   cweId?: string;
 }

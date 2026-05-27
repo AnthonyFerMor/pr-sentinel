@@ -4,6 +4,12 @@
 
 import { PRInfo } from './types';
 
+export interface RepoInfo {
+  owner: string;
+  repo: string;
+  url: string;
+}
+
 /**
  * Parsea una URL de PR de GitHub y extrae owner, repo, y número de PR.
  *
@@ -46,5 +52,31 @@ export function parsePRUrl(url: string): PRInfo {
     repo,
     pullNumber,
     url: `https://github.com/${owner}/${repo}/pull/${pullNumber}`,
+  };
+}
+
+export function parseRepoUrl(url: string): RepoInfo {
+  let cleanUrl = url.trim();
+
+  if (!cleanUrl.startsWith('http')) {
+    cleanUrl = 'https://' + cleanUrl;
+  }
+
+  const match = cleanUrl.match(/github\.com\/([^/]+)\/([^/#?]+)/);
+
+  if (!match) {
+    throw new Error(
+      `Invalid repository URL. Expected format: https://github.com/owner/repo\n` +
+      `Received: ${url}`
+    );
+  }
+
+  const [, owner, repoWithSuffix] = match;
+  const repo = repoWithSuffix.replace(/\.git$/, '');
+
+  return {
+    owner,
+    repo,
+    url: `https://github.com/${owner}/${repo}`,
   };
 }

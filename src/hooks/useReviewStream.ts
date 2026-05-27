@@ -7,8 +7,9 @@ import { useState, useCallback, useRef } from 'react';
 import { StreamEvent, ReviewResult, PRMetadata } from '@/lib/types';
 
 export interface UseReviewStreamReturn {
-  startReview: (prUrl: string, postToGitHub: boolean) => Promise<void>;
+  startReview: (prUrl: string) => Promise<void>;
   isLoading: boolean;
+  startedAt: number | null;
   statusMessages: string[];
   streamedContent: string;
   review: ReviewResult | null;
@@ -20,6 +21,7 @@ export interface UseReviewStreamReturn {
 
 export function useReviewStream(): UseReviewStreamReturn {
   const [isLoading, setIsLoading] = useState(false);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [statusMessages, setStatusMessages] = useState<string[]>([]);
   const [streamedContent, setStreamedContent] = useState('');
   const [review, setReview] = useState<ReviewResult | null>(null);
@@ -33,6 +35,7 @@ export function useReviewStream(): UseReviewStreamReturn {
   const reset = useCallback(() => {
     abortRef.current?.abort();
     setIsLoading(false);
+    setStartedAt(null);
     setStatusMessages([]);
     setStreamedContent('');
     setReview(null);
@@ -41,9 +44,16 @@ export function useReviewStream(): UseReviewStreamReturn {
     setError(null);
   }, []);
 
-  const startReview = useCallback(async (prUrl: string, postToGitHub: boolean) => {
-    reset();
+  const startReview = useCallback(async (prUrl: string) => {
+    abortRef.current?.abort();
     setIsLoading(true);
+    setStartedAt(Date.now());
+    setStatusMessages([]);
+    setStreamedContent('');
+    setReview(null);
+    setMetadata(null);
+    setCacheInfo(null);
+    setError(null);
 
     const abortController = new AbortController();
     abortRef.current = abortController;
@@ -52,7 +62,7 @@ export function useReviewStream(): UseReviewStreamReturn {
       const response = await fetch('/api/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prUrl, postToGitHub }),
+        body: JSON.stringify({ prUrl }),
         signal: abortController.signal,
       });
 
@@ -69,7 +79,10 @@ export function useReviewStream(): UseReviewStreamReturn {
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n\n');
@@ -92,11 +105,11 @@ export function useReviewStream(): UseReviewStreamReturn {
                 setStreamedContent((prev) => prev + event.content);
                 break;
               case 'cache_info':
-                setCacheInfo({
-                  cached: event.cached,
-                  cachedTokens: event.cachedTokens,
-                  totalTokens: event.totalTokens,
-                });
+                setCacheInfo((prev) => ({
+                  cached: (prev?.cached ?? false) && event.cached,
+                  cachedTokens: (prev?.cachedTokens ?? 0) + event.cachedTokens,
+                  totalTokens: (prev?.totalTokens ?? 0) + event.totalTokens,
+                }));
                 break;
               case 'complete':
                 setReview(event.data);
@@ -117,10 +130,10 @@ export function useReviewStream(): UseReviewStreamReturn {
     } finally {
       setIsLoading(false);
     }
-  }, [reset]);
+  }, []);
 
   return {
-    startReview, isLoading, statusMessages, streamedContent,
+    startReview, isLoading, startedAt, statusMessages, streamedContent,
     review, metadata, cacheInfo, error, reset,
   };
 }

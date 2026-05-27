@@ -5,16 +5,12 @@ import { useState, FormEvent } from 'react';
 interface ReviewFormProps {
   onSubmit: (prUrl: string) => void;
   isLoading: boolean;
-  postToGitHub: boolean;
-  onTogglePost: (v: boolean) => void;
   onReset: () => void;
 }
 
 export default function ReviewForm({
   onSubmit,
   isLoading,
-  postToGitHub,
-  onTogglePost,
   onReset,
 }: ReviewFormProps) {
   const [url, setUrl] = useState('');
@@ -27,7 +23,7 @@ export default function ReviewForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="relative">
+    <form onSubmit={handleSubmit} className="relative" role="search" aria-label="PR review form">
       {/* Glow border effect */}
       <div className="absolute -inset-0.5 bg-gradient-to-r from-violet-600 via-blue-600 to-cyan-500 rounded-2xl blur opacity-30 group-hover:opacity-50 transition" />
 
@@ -79,24 +75,12 @@ export default function ReviewForm({
           </button>
         </div>
 
-        {/* Options row */}
+        {/* Comment posting is mandatory for the hackathon deliverable. */}
         <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
-          <label className="flex items-center gap-2 cursor-pointer group">
-            <div className="relative">
-              <input
-                type="checkbox"
-                checked={postToGitHub}
-                onChange={(e) => onTogglePost(e.target.checked)}
-                className="sr-only peer"
-                disabled={isLoading}
-              />
-              <div className="w-9 h-5 bg-gray-700 peer-checked:bg-violet-600 rounded-full transition-colors" />
-              <div className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
-            </div>
-            <span className="text-sm text-gray-400 group-hover:text-gray-300 transition-colors">
-              Post review to GitHub
-            </span>
-          </label>
+          <div className="flex items-center gap-2 text-sm text-emerald-400">
+            <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+            Posts as a PR comment
+          </div>
 
           {isLoading && (
             <button

@@ -4,9 +4,9 @@
 
 import { DiffFile, DiffChunk, ProcessedDiff } from './types';
 
-const CHARS_PER_TOKEN = 4;
-const MAX_TOKENS_PER_CHUNK = 45_000;
-const CHUNKING_THRESHOLD = 50_000;
+const CHARS_PER_TOKEN = parseInt(process.env.CHARS_PER_TOKEN ?? '4', 10);
+const MAX_TOKENS_PER_CHUNK = parseInt(process.env.MAX_TOKENS_PER_CHUNK ?? '45000', 10);
+const CHUNKING_THRESHOLD = parseInt(process.env.CHUNKING_THRESHOLD ?? '50000', 10);
 
 /**
  * Estima la cantidad de tokens en un texto (~4 chars = 1 token).
@@ -39,7 +39,7 @@ export function processDiff(files: DiffFile[]): ProcessedDiff {
   analyzableFiles.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
 
   const totalTokensEstimate = analyzableFiles.reduce(
-    (sum, file) => sum + estimateTokens(file.patch),
+    (sum, file) => sum + estimateTokens(file.patch || ''),
     0
   );
 

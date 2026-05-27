@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useEffect } from 'react';
 import { useReviewStream } from '@/hooks/useReviewStream';
 import ReviewForm from '@/components/ReviewForm';
 import ReviewStream from '@/components/ReviewStream';
@@ -10,6 +10,7 @@ export default function Home() {
   const {
     startReview,
     isLoading,
+    startedAt,
     statusMessages,
     streamedContent,
     review,
@@ -19,21 +20,33 @@ export default function Home() {
     reset,
   } = useReviewStream();
 
-  const [postToGitHub, setPostToGitHub] = useState(true);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const lastPrUrl = useRef<string>('');
 
   const handleSubmit = async (prUrl: string) => {
-    await startReview(prUrl, postToGitHub);
+    lastPrUrl.current = prUrl;
+    await startReview(prUrl);
   };
+
+  const handleRetry = () => {
+    if (lastPrUrl.current) {
+      handleSubmit(lastPrUrl.current);
+    }
+  };
+
+  useEffect(() => {
+    if ((isLoading || review || error) && resultsRef.current) {
+      resultsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [isLoading, review, error]);
 
   return (
     <>
       <Header />
       <main className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
-        {/* Hero gradient overlay */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(120,80,255,0.15),transparent)] pointer-events-none" />
 
         <div className="relative max-w-4xl mx-auto px-4 pt-10 pb-20">
-          {/* Hero text */}
           <div className="text-center mb-10">
             <h2 className="text-3xl md:text-4xl font-bold text-white tracking-tight">
               Automated PR
@@ -44,28 +57,33 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Form */}
           <ReviewForm
             onSubmit={handleSubmit}
             isLoading={isLoading}
-            postToGitHub={postToGitHub}
-            onTogglePost={setPostToGitHub}
             onReset={reset}
           />
 
-          {/* Results */}
-          {(isLoading || review || error) && (
-            <ReviewStream
-              isLoading={isLoading}
-              statusMessages={statusMessages}
-              streamedContent={streamedContent}
-              review={review}
-              metadata={metadata}
-              cacheInfo={cacheInfo}
-              error={error}
-            />
-          )}
+          <div ref={resultsRef}>
+            {(isLoading || review || error) && (
+              <ReviewStream
+                isLoading={isLoading}
+                startedAt={startedAt}
+                statusMessages={statusMessages}
+                streamedContent={streamedContent}
+                review={review}
+                metadata={metadata}
+                cacheInfo={cacheInfo}
+                error={error}
+                onRetry={error ? handleRetry : undefined}
+              />
+            )}
+          </div>
         </div>
+
+        <footer className="border-t border-white/5 py-6 text-center text-xs text-gray-600">
+          <p>Built with Next.js, Gemini 3.5 Flash & Tailwind CSS</p>
+          <p className="mt-1">PR Sentinel — IQ Source Hackathon 2026</p>
+        </footer>
       </main>
     </>
   );
