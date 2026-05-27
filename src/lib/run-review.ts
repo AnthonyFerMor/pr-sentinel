@@ -182,6 +182,7 @@ export async function runReview(
   prUrl: string,
   options: RunReviewOptions = {}
 ): Promise<RunReviewOutcome> {
+  const startTime = Date.now();
   const emit = options.onEvent ?? (() => {});
   const updateExisting = options.updateExisting ?? false;
   const activeSkills = resolveActiveSkills(options.skills);
@@ -285,7 +286,6 @@ export async function runReview(
 
   emit({ type: 'status', message: `🤖 Starting AI analysis with ${getPrimaryModelName()}...` });
 
-  const startTime = Date.now();
   let cacheInfo = { cacheHit: false, cachedTokens: 0, totalTokens: 0 };
   let merged: Omit<ReviewResult, 'metadata'> | null = null;
   let partial = false;
@@ -330,9 +330,17 @@ export async function runReview(
       emit({ type: 'chunk', content: geminiChunk.text });
     }
 
-    const parsed = tryParseJsonObject(chunkRaw);
-    merged = mergeChunkReviews(merged, normalizeChunkReview(parsed));
-    processedChunks += 1;
+    try {
+      const parsed = tryParseJsonObject(chunkRaw);
+      merged = mergeChunkReviews(merged, normalizeChunkReview(parsed));
+      processedChunks += 1;
+    } catch {
+      emit({
+        type: 'error',
+        message: `Failed to parse AI response for chunk ${chunk.id}. Raw length: ${chunkRaw.length}`,
+      });
+      continue;
+    }
 
     const chunkCacheInfo = await getCacheInfo();
     cacheInfo = {
