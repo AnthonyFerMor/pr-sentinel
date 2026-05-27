@@ -7,9 +7,13 @@ import {
   buildCachePrimer,
   buildSystemPrompt,
   buildUserPrompt,
+  buildScoutPrompt,
   getReviewResponseSchema,
+  getScoutResponseSchema,
+  Hotspot,
 } from './prompt';
 import { PRMetadata, DiffFile, ReviewResult } from './types';
+import { Skill, resolveActiveSkills, skillsCacheKey } from './skills';
 
 const DEFAULT_MODEL_NAME = 'gemini-3.5-flash';
 const MODEL_NAME = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL_NAME;
@@ -250,26 +254,28 @@ function buildUserFacingGeminiError(
  * Cache verification: usageMetadata.cachedContentTokenCount > 0 = cache hit.
  * This is visible in logs and the UI dashboard.
  */
-async function ensureCache(modelName: string): Promise<string> {
+async function ensureCache(modelName: string, skills: Skill[]): Promise<string> {
   const client = getClient();
   const now = Date.now();
-  const existing = cacheByModel.get(modelName);
-  const lastFailure = cacheFailureByModel.get(modelName) ?? 0;
+  const skillsKey = skillsCacheKey(skills);
+  const cacheKey = `${modelName}::${skillsKey}`;
+  const existing = cacheByModel.get(cacheKey);
+  const lastFailure = cacheFailureByModel.get(cacheKey) ?? 0;
 
   if (existing && now - existing.createdAt < CACHE_TTL_MS) {
-    console.log(`Reusing Gemini cache for ${modelName}: ${existing.name}`);
+    console.log(`Reusing Gemini cache for ${cacheKey}: ${existing.name}`);
     return existing.name;
   }
 
   if (lastFailure && now - lastFailure < CACHE_FAILURE_COOLDOWN_MS) {
     throw new Error(
-      `Gemini cache creation is cooling down for ${modelName} after a recent provider failure`
+      `Gemini cache creation is cooling down for ${cacheKey} after a recent provider failure`
     );
   }
 
-  console.log(`Creating Gemini context cache for ${modelName}...`);
-  const systemPrompt = buildSystemPrompt();
-  const cachePrimer = buildCachePrimer();
+  console.log(`Creating Gemini context cache for ${cacheKey}...`);
+  const systemPrompt = buildSystemPrompt(skills);
+  const cachePrimer = buildCachePrimer(skills);
 
   try {
     const cache = await client.caches.create({
@@ -283,20 +289,20 @@ async function ensureCache(modelName: string): Promise<string> {
           },
         ],
         ttl: '3600s',
-        displayName: `pr-sentinel-system-rubric-${modelName}`,
+        displayName: `pr-sentinel-system-rubric-${modelName}-${skillsKey}`,
       },
     });
 
     if (!cache.name) throw new Error('Gemini cache was created without a cache name');
 
-    cacheByModel.set(modelName, { name: cache.name, createdAt: now });
-    cacheFailureByModel.delete(modelName);
-    console.log(`Gemini cache created for ${modelName}: ${cache.name}`);
+    cacheByModel.set(cacheKey, { name: cache.name, createdAt: now });
+    cacheFailureByModel.delete(cacheKey);
+    console.log(`Gemini cache created for ${cacheKey}: ${cache.name}`);
     return cache.name;
   } catch (error) {
-    console.error(`Gemini cache creation failed for ${modelName}:`, error);
-    cacheByModel.delete(modelName);
-    cacheFailureByModel.set(modelName, Date.now());
+    console.error(`Gemini cache creation failed for ${cacheKey}:`, error);
+    cacheByModel.delete(cacheKey);
+    cacheFailureByModel.set(cacheKey, Date.now());
     throw error;
   }
 }
@@ -309,6 +315,7 @@ function getThinkingBudget(): number {
 
 async function buildGenerationConfig(
   modelName: string,
+  skills: Skill[],
   onStatus?: (message: string) => void
 ): Promise<GeminiGenerationConfig> {
   const thinkingBudget = getThinkingBudget();
@@ -318,13 +325,13 @@ async function buildGenerationConfig(
     return {
       responseMimeType: 'application/json',
       responseSchema: getReviewResponseSchema(),
-      systemInstruction: buildSystemPrompt(),
+      systemInstruction: buildSystemPrompt(skills),
       thinkingConfig,
     };
   }
 
   try {
-    const cacheName = await ensureCache(modelName);
+    const cacheName = await ensureCache(modelName, skills);
     return {
       cachedContent: cacheName,
       responseMimeType: 'application/json',
@@ -341,7 +348,7 @@ async function buildGenerationConfig(
     return {
       responseMimeType: 'application/json',
       responseSchema: getReviewResponseSchema(),
-      systemInstruction: buildSystemPrompt(),
+      systemInstruction: buildSystemPrompt(skills),
       thinkingConfig,
     };
   }
@@ -351,9 +358,10 @@ async function createModelStream(
   client: GoogleGenAI,
   modelName: string,
   userPrompt: string,
+  skills: Skill[],
   onStatus?: (message: string) => void
 ): Promise<AsyncIterable<GeminiStreamChunk>> {
-  const config = await buildGenerationConfig(modelName, onStatus);
+  const config = await buildGenerationConfig(modelName, skills, onStatus);
   const response = await client.models.generateContentStream({
     model: modelName,
     contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -366,6 +374,7 @@ async function createModelStream(
 async function* generateWithRetry(
   client: GoogleGenAI,
   userPrompt: string,
+  skills: Skill[],
   onStatus?: (message: string) => void
 ): AsyncGenerator<{ chunk: GeminiStreamChunk; modelName: string }> {
   const candidates = getModelCandidates();
@@ -381,7 +390,7 @@ async function* generateWithRetry(
       let yieldedFromAttempt = false;
 
       try {
-        const response = await createModelStream(client, modelName, userPrompt, onStatus);
+        const response = await createModelStream(client, modelName, userPrompt, skills, onStatus);
 
         for await (const chunk of response) {
           yieldedFromAttempt = true;
@@ -430,7 +439,12 @@ export async function analyzeChunk(
   metadata: PRMetadata,
   files: DiffFile[],
   chunkInfo?: { chunkId: number; totalChunks: number },
-  options?: { onStatus?: (message: string) => void }
+  options?: {
+    onStatus?: (message: string) => void;
+    skills?: Skill[];
+    allFiles?: DiffFile[];
+    focusAreas?: Hotspot[];
+  }
 ): Promise<{
   stream: AsyncIterable<{ text: string }>;
   getCacheInfo: () => Promise<{
@@ -441,8 +455,12 @@ export async function analyzeChunk(
   getModelUsed: () => string;
 }> {
   const client = getClient();
+  const skills = options?.skills ?? resolveActiveSkills();
   const userPrompt = buildUserPrompt(metadata, files, chunkInfo, {
     includeCachePrimer: !useExplicitCache(),
+    skills,
+    allFiles: options?.allFiles,
+    focusAreas: options?.focusAreas,
   });
   let usageInfo: { cacheHit: boolean; cachedTokens: number; totalTokens: number } | null = null;
   let modelUsed = MODEL_NAME;
@@ -451,6 +469,7 @@ export async function analyzeChunk(
     for await (const { chunk, modelName } of generateWithRetry(
       client,
       userPrompt,
+      skills,
       options?.onStatus
     )) {
       modelUsed = modelName;
@@ -485,6 +504,52 @@ export async function analyzeChunk(
     getCacheInfo: async () => usageInfo ?? { cacheHit: false, cachedTokens: 0, totalTokens: 0 },
     getModelUsed: () => modelUsed,
   };
+}
+
+/**
+ * Pase 1 (scout): localiza hotspots con una llamada liviana y no-streaming.
+ * Best-effort: si falla, devuelve [] y el flujo continúa sin focus areas.
+ */
+export async function scoutHotspots(
+  metadata: PRMetadata,
+  files: DiffFile[],
+  skills?: Skill[]
+): Promise<Hotspot[]> {
+  const client = getClient();
+  const prompt = buildScoutPrompt(metadata, files, skills);
+
+  for (const modelName of getModelCandidates()) {
+    try {
+      const response = await client.models.generateContent({
+        model: modelName,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: getScoutResponseSchema(),
+          thinkingConfig: { thinkingBudget: 1024 },
+        },
+      });
+
+      const text = (response as { text?: string }).text ?? '';
+      const parsed = JSON.parse(text) as { hotspots?: unknown };
+      if (Array.isArray(parsed.hotspots)) {
+        return parsed.hotspots.filter(
+          (h): h is Hotspot =>
+            !!h &&
+            typeof h === 'object' &&
+            typeof (h as Hotspot).file === 'string' &&
+            typeof (h as Hotspot).reason === 'string' &&
+            typeof (h as Hotspot).category === 'string'
+        );
+      }
+      return [];
+    } catch (error) {
+      console.warn(`Scout pass failed for ${modelName}:`, extractProviderError(error).message);
+      continue;
+    }
+  }
+
+  return [];
 }
 
 /**

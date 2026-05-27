@@ -23,7 +23,31 @@ export function estimateTokens(text: string): number {
  * 2. Ordenar por prioridad (high → medium → low)
  * 3. Si total > 50K tokens, dividir en chunks
  */
-export function processDiff(files: DiffFile[]): ProcessedDiff {
+/**
+ * Sube la prioridad de un archivo cuando un skill activo lo hace relevante.
+ * Ej.: con Accessibility, los componentes UI importan más; con Testing, los tests.
+ */
+function adjustPriorityForSkills(
+  file: DiffFile,
+  skillIds: string[]
+): DiffFile['priority'] {
+  if (file.priority === 'skip') return file.priority;
+  const lower = file.filename.toLowerCase();
+
+  if (skillIds.includes('testing') && /\.(test|spec)\.[jt]sx?$/.test(lower)) {
+    return 'high';
+  }
+  if (
+    skillIds.includes('accessibility') &&
+    /\.(tsx|jsx)$/.test(lower) &&
+    !/\/(api|routes?)\//.test(lower)
+  ) {
+    return 'high';
+  }
+  return file.priority;
+}
+
+export function processDiff(files: DiffFile[], skillIds: string[] = []): ProcessedDiff {
   const skippedFiles: string[] = [];
   const analyzableFiles: DiffFile[] = [];
 
@@ -31,7 +55,10 @@ export function processDiff(files: DiffFile[]): ProcessedDiff {
     if (file.priority === 'skip') {
       skippedFiles.push(file.filename);
     } else {
-      analyzableFiles.push(file);
+      analyzableFiles.push({
+        ...file,
+        priority: adjustPriorityForSkills(file, skillIds),
+      });
     }
   }
 

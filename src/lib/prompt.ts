@@ -5,16 +5,30 @@
 import { Type } from '@google/genai';
 import { PRMetadata, DiffFile, ReviewResult } from './types';
 import { buildReviewMarker } from './review-marker';
+import { Skill, resolveActiveSkills } from './skills';
 
 /**
  * System prompt para el agente de revisión de PRs.
  * Diseñado para encontrar bugs REALES, no genéricos.
+ *
+ * Se compone de un núcleo estable (misión + método) más los fragmentos
+ * de los skills activos. Si no se pasan skills, usa los default.
  */
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(skills?: Skill[]): string {
+  const active = skills ?? resolveActiveSkills();
+  const skillSections = active
+    .map((skill) => skill.promptFragment)
+    .join('\n\n');
+  const skillNames = active.map((skill) => `${skill.icon} ${skill.name}`).join(', ');
+
   return `You are PR Sentinel, an expert senior code reviewer with 15+ years of experience in security, performance, and code quality. You review Pull Requests on GitHub.
 
 ## YOUR MISSION
 Analyze the PR diff and produce a thorough, actionable code review. Find REAL issues, not generic advice. Every finding must reference specific code.
+
+## ACTIVE REVIEW SKILLS
+This review has the following skills enabled: ${skillNames || '(none)'}.
+Focus your analysis on the categories these skills cover. Do not report findings outside the enabled skills' scope.
 
 ## ANALYSIS METHOD — DATA FLOW TRACING
 For EVERY file in the diff, follow this rigorous process:
@@ -26,40 +40,9 @@ For EVERY file in the diff, follow this rigorous process:
 5. **Check authorization**: for every write operation (POST, PUT, DELETE, UPDATE, INSERT), verify that the handler checks WHO is making the request, not just WHAT is being requested.
 6. **Check error boundaries**: trace what happens when each async operation fails — does the error propagate correctly? Is the user informed? Is state left consistent?
 
-## WHAT TO LOOK FOR (priority order)
+## WHAT TO LOOK FOR (only the enabled skills below)
 
-### 🔴 SECURITY ISSUES (Critical)
-- **SQL Injection**: string interpolation/concatenation in SQL (template literals, +, .concat). Look for: WHERE, ORDER BY, LIKE, LIMIT, INSERT VALUES, column names built from user input. Check that EVERY query parameter uses ? placeholders or parameterized queries.
-- **XSS**: user data rendered as HTML without escaping. Look for: dangerouslySetInnerHTML, innerHTML, document.write, React raw HTML, template literal HTML, markdown rendering of user content.
-- **CSRF**: state-changing endpoints (POST/PUT/DELETE) that rely only on cookies for auth without CSRF token, SameSite attribute, or origin check.
-- **Auth/authz bypass**: endpoints that trust client-supplied IDs (userId, noteId, ownerId) without verifying ownership server-side. IDOR vulnerabilities.
-- **Secrets exposure**: API keys, tokens, passwords, database URLs in code, logs, error messages, or NEXT_PUBLIC_ env vars.
-- **Path traversal**: user input in file paths without sanitization (../../etc/passwd).
-- **Missing input validation**: endpoints that accept and use request data without type checking, bounds checking, or allowlist validation.
-- **Unsafe redirects**: redirect URLs built from user input without allowlist.
-
-### 🟠 BUGS & CORRECTNESS (High)
-- Logic errors, off-by-one, inverted conditions, missing edge cases (empty arrays, null values, zero, negative numbers)
-- Race conditions: concurrent requests modifying shared state without locks or transactions
-- Null/undefined crashes: accessing properties on potentially null values without guards
-- Missing error handling: empty catch blocks, unhandled promise rejections, swallowed errors
-- Data loss: UPDATE/DELETE without WHERE, missing transaction boundaries for multi-step operations
-- Broken pagination: missing ORDER BY, negative offsets, unbounded page sizes
-- Stale closures in React: useEffect/useCallback with missing dependencies
-
-### 🟡 PERFORMANCE (Medium)
-- N+1 queries: database/API calls inside loops or .map(). Recommend joins or batched queries.
-- Missing indexes on frequently queried columns
-- Memory leaks: event listeners not cleaned up, growing arrays/maps without bounds
-- Unnecessary re-renders: inline object/function props, missing useMemo/useCallback
-- Sequential awaits where Promise.all would be safe
-- Blocking I/O in async contexts
-
-### 🔵 CODE QUALITY (Lower)
-- Code smells, functions >40 lines doing multiple things
-- DRY violations: duplicated logic that should be extracted
-- Confusing naming, misleading variable names
-- TypeScript 'any' usage, missing type safety
+${skillSections}
 
 ## RULES
 1. Be specific — reference exact file and line range from the diff
@@ -68,7 +51,7 @@ For EVERY file in the diff, follow this rigorous process:
 4. Use 'critical' sparingly — only for exploitable security, data loss, or production outage
 5. Acknowledge good code in positiveAspects — safe patterns, good validation, clean architecture
 6. Consider the framework (Next.js App Router, React 19, etc.)
-7. For security findings, ALWAYS include the CWE ID
+7. Stay within the enabled skills' scope — do not surface issues from disabled categories
 8. For EACH finding, explain: what the bug IS, what HAPPENS if exploited/triggered, and HOW to fix it with code
 
 Return structured JSON matching the provided schema. Do NOT wrap in markdown code blocks.`;
@@ -77,8 +60,16 @@ Return structured JSON matching the provided schema. Do NOT wrap in markdown cod
 /**
  * Stable review rubric stored in Gemini context cache.
  * Keep this large and stable so cache hits are meaningful and verifiable.
+ *
+ * El núcleo es estable; los checklists provienen de los skills activos.
+ * Para una misma combinación de skills, el primer es idéntico → cache hit.
  */
-export function buildCachePrimer(): string {
+export function buildCachePrimer(skills?: Skill[]): string {
+  const active = skills ?? resolveActiveSkills();
+  const skillChecklists = active
+    .map((skill) => skill.rubricFragment)
+    .join('\n\n');
+
   return `PR SENTINEL REUSABLE REVIEW RUBRIC
 
 This cached primer is policy and review methodology, not code under review. Use it silently to guide every Pull Request review. Do not mention the primer or quote it in the final answer.
@@ -90,23 +81,14 @@ Severity calibration:
 - low: minor maintainability, readability, small type-safety improvements, or optional hardening.
 - info: useful observation that should not block merge.
 
-Security checklist:
-- Injection: SQL, shell, template, LDAP, NoSQL, path traversal, unsafe dynamic import, unsafe eval, unsafe deserialization.
-- Web security: XSS through raw HTML, unsafe markdown rendering, missing output encoding, unsafe redirects, CSRF on state-changing routes, missing secure cookie flags, weak CORS, missing origin checks.
-- Auth and authorization: endpoints that trust client-supplied user IDs, tenant IDs, repository names, roles, or branch names; missing permission checks before writes; confused-deputy flows; inadequate OAuth/PAT scope handling.
-- Secrets: API keys, tokens, passwords, private keys, webhook secrets, database URLs, or signed URLs committed or logged. Never print secrets in suggestions.
-- GitHub integration: avoid posting duplicate comments unless intentional, avoid broad token scopes, and treat public PR URLs as untrusted input.
+ENABLED SKILL CHECKLISTS (only review what these cover):
 
-Correctness checklist:
-- Null and undefined access, empty arrays, missing pagination, off-by-one errors, timezone bugs, stale cache reads, partial writes, broken retry behavior, swallowed errors, race conditions, non-idempotent retries, and optimistic UI that lies about server state.
+${skillChecklists}
+
+Cross-cutting notes:
 - In Next.js App Router, check server/client boundaries, route handler request parsing, streaming behavior, runtime choice, max duration, dynamic data caching, and environment variable visibility. Server secrets must never use NEXT_PUBLIC_ prefixes.
 - In React, check stale closures, missing dependencies, controlled input edge cases, duplicate keys, invalid nesting, hydration mismatches, and state that can update after cancellation.
-- For database code, check migrations, missing WHERE clauses, transaction boundaries, unique constraints, isolation assumptions, and index usage.
-
-Performance checklist:
-- N+1 API/database calls, sequential awaits where safe concurrency is possible, repeated parsing of large diffs, loading binary/generated files into prompts, unbounded memory growth while streaming, huge DOM rendering, and polling loops without backoff.
-- For large PRs, prioritize source code and server/security-sensitive files first. Skip or summarize lock files, generated assets, binary files, vendored code, build artifacts, minified bundles, maps, images, fonts, and snapshots unless the PR is specifically about them.
-- Prefer bounded concurrency and graceful degradation over all-or-nothing work when a provider is rate-limited or overloaded.
+- GitHub integration: treat public PR URLs as untrusted input.
 
 Review quality rules:
 - Findings must be grounded in the diff. Avoid generic advice, style preferences, and imaginary surrounding code.
@@ -178,15 +160,107 @@ function classifyFileRole(filename: string): string {
 /**
  * Construye el user prompt con contexto del PR y diff.
  */
+/**
+ * Anota cada línea del patch con su número real en el archivo nuevo,
+ * parseando los hunk headers (@@ -a,b +c,d @@). Así el modelo puede dar
+ * un lineRange preciso que GitHub pueda anclar a la línea correcta.
+ * Las líneas eliminadas no tienen número en el lado nuevo.
+ */
+function annotatePatch(patch: string): string {
+  if (!patch) return patch;
+  const pad = (n: number) => String(n).padStart(5);
+  const lines = patch.split('\n');
+  let newLine = 0;
+  const out: string[] = [];
+
+  for (const line of lines) {
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      newLine = parseInt(hunk[1], 10);
+      out.push(`     | ${line}`);
+      continue;
+    }
+    const marker = line[0];
+    if (marker === '+') {
+      out.push(`${pad(newLine)}|+${line.slice(1)}`);
+      newLine += 1;
+    } else if (marker === '-') {
+      out.push(`     |-${line.slice(1)}`);
+    } else if (marker === ' ') {
+      out.push(`${pad(newLine)}| ${line.slice(1)}`);
+      newLine += 1;
+    } else {
+      // "\ No newline at end of file" or empty trailing line
+      out.push(`     | ${line}`);
+    }
+  }
+
+  return out.join('\n');
+}
+
+/** Rol corto para el file map (sin la guía larga de classifyFileRole). */
+function shortFileRole(filename: string): string {
+  const full = classifyFileRole(filename);
+  if (!full) return '';
+  return full.split('—')[0].trim();
+}
+
+/** Índice de todos los archivos del PR, para dar contexto cross-file. */
+function buildFileMap(allFiles: DiffFile[]): string {
+  const rows = allFiles
+    .map((f) => {
+      const role = shortFileRole(f.filename);
+      return `- \`${f.filename}\` [${f.status}] (+${f.additions}/-${f.deletions})${role ? ` — ${role}` : ''}`;
+    })
+    .join('\n');
+  return `## PR File Map (all changed files)
+Use this map to reason about cross-file interactions (a sink in one file fed by a source in another, shared state, an endpoint plus its client caller). You may only cite findings in files whose diff is shown below.
+
+${rows}`;
+}
+
+export interface Hotspot {
+  file: string;
+  lineRange?: string;
+  reason: string;
+  category: string;
+}
+
+function buildFocusAreas(hotspots: Hotspot[]): string {
+  const rows = hotspots
+    .map(
+      (h) =>
+        `- \`${h.file}\`${h.lineRange ? ` (${h.lineRange})` : ''} — [${h.category}] ${h.reason}`
+    )
+    .join('\n');
+  return `## FOCUS AREAS (from initial scan)
+A fast first-pass scan flagged these spots as most likely to contain real issues. Investigate each one thoroughly and confirm or dismiss it with evidence from the diff. Do not limit yourself to these — but do not miss them.
+
+${rows}`;
+}
+
 export function buildUserPrompt(
   metadata: PRMetadata,
   files: DiffFile[],
   chunkInfo?: { chunkId: number; totalChunks: number },
-  options?: { includeCachePrimer?: boolean }
+  options?: {
+    includeCachePrimer?: boolean;
+    skills?: Skill[];
+    allFiles?: DiffFile[];
+    focusAreas?: Hotspot[];
+  }
 ): string {
-  const cachePrimer = options?.includeCachePrimer ? `${buildCachePrimer()}\n\n---\n\n` : '';
+  const cachePrimer = options?.includeCachePrimer
+    ? `${buildCachePrimer(options.skills)}\n\n---\n\n`
+    : '';
   const chunkHeader = chunkInfo
     ? `\n⚠️ This is chunk ${chunkInfo.chunkId} of ${chunkInfo.totalChunks}. Focus on the files in this chunk.\n`
+    : '';
+  const fileMap = options?.allFiles && options.allFiles.length > 0
+    ? `\n${buildFileMap(options.allFiles)}\n`
+    : '';
+  const focusAreas = options?.focusAreas && options.focusAreas.length > 0
+    ? `\n${buildFocusAreas(options.focusAreas)}\n`
     : '';
 
   const filesSection = files
@@ -195,7 +269,7 @@ export function buildUserPrompt(
       return [
         `### File: ${f.filename} [${f.status}] (+${f.additions}, -${f.deletions})${role ? ` — ${role}` : ''}`,
         '```diff',
-        f.patch || '(binary file — no diff available)',
+        f.patch ? annotatePatch(f.patch) : '(binary file — no diff available)',
         '```',
       ].join('\n');
     })
@@ -209,10 +283,13 @@ export function buildUserPrompt(
 
 **Description:**
 ${metadata.body || '(no description provided)'}
-${chunkHeader}
-## Changed Files
+${fileMap}${focusAreas}${chunkHeader}
+## Changed Files (full diff for this ${chunkInfo ? 'chunk' : 'PR'})
 
 ${filesSection}
+
+## READING THE DIFF
+Each diff line is prefixed with \`<lineNumber>|<marker>\` where the number is the REAL line in the new file and the marker is \`+\` (added), \`-\` (removed, no new-file number), or space (context). When you report a finding, set lineRange to those exact numbers (e.g. "L42" or "L42-L48") so it anchors to the right line on GitHub.
 
 ## ANALYSIS INSTRUCTIONS
 Use your thinking to deeply analyze the code before producing findings. For each file:
@@ -225,6 +302,71 @@ Use your thinking to deeply analyze the code before producing findings. For each
 7. Look for race conditions in concurrent operations
 
 Be exhaustive. Missing a real SQL injection or XSS is worse than reporting a minor false positive. But do NOT invent issues — every finding must be grounded in the actual diff code shown above.`;
+}
+
+/**
+ * Pase 1 (scout): prompt liviano que sólo localiza hotspots, sin análisis profundo.
+ * Le damos el file map + diffs anotados y pedimos una lista corta de zonas a investigar.
+ */
+export function buildScoutPrompt(
+  metadata: PRMetadata,
+  files: DiffFile[],
+  skills?: Skill[]
+): string {
+  const active = skills ?? resolveActiveSkills();
+  const skillNames = active.map((s) => `${s.icon} ${s.name}`).join(', ');
+  const filesSection = files
+    .map((f) => {
+      const role = classifyFileRole(f.filename);
+      return [
+        `### File: ${f.filename} [${f.status}]${role ? ` — ${role}` : ''}`,
+        '```diff',
+        f.patch ? annotatePatch(f.patch) : '(binary file — no diff available)',
+        '```',
+      ].join('\n');
+    })
+    .join('\n\n');
+
+  return `You are the FIRST-PASS triage scanner of PR Sentinel. Do NOT write a full review. Your only job is to quickly flag the spots most likely to contain real issues, so a deeper second pass can focus there.
+
+Enabled skills (only flag things in scope): ${skillNames || '(none)'}.
+
+## Pull Request: "${metadata.title}"
+${metadata.body || '(no description provided)'}
+
+## Changed Files (line numbers are real new-file lines)
+
+${filesSection}
+
+## TASK
+Return a short list of hotspots — at most 12 — ranked by how likely they are to be a real problem. For each: the file, the line range (use the real line numbers shown), the suspected category, and a one-line reason. Be selective: only spots that genuinely warrant a closer look. Do NOT solve them here.
+
+Return structured JSON matching the provided schema. Do NOT wrap in markdown code blocks.`;
+}
+
+export function getScoutResponseSchema() {
+  return {
+    type: Type.OBJECT,
+    properties: {
+      hotspots: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            file: { type: Type.STRING, description: 'File path of the hotspot' },
+            lineRange: { type: Type.STRING, description: 'Real line range, e.g. "L42-L48"' },
+            category: {
+              type: Type.STRING,
+              description: 'Suspected category: security, bug, performance, quality, accessibility, testing',
+            },
+            reason: { type: Type.STRING, description: 'One-line reason this spot is suspicious' },
+          },
+          required: ['file', 'reason', 'category'],
+        },
+      },
+    },
+    required: ['hotspots'],
+  };
 }
 
 /**

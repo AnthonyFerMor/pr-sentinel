@@ -1,9 +1,10 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { useReviewStream } from '@/hooks/useReviewStream';
 import ReviewForm from '@/components/ReviewForm';
 import ReviewStream from '@/components/ReviewStream';
+import SkillSelector, { loadStoredSkills } from '@/components/SkillSelector';
 import Header from '@/components/Header';
 
 export default function Home() {
@@ -22,10 +23,16 @@ export default function Home() {
 
   const resultsRef = useRef<HTMLDivElement>(null);
   const lastPrUrl = useRef<string>('');
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+
+  // Cargar selección guardada en el cliente (evita mismatch de hidratación).
+  useEffect(() => {
+    setSelectedSkills(loadStoredSkills());
+  }, []);
 
   const handleSubmit = async (prUrl: string) => {
     lastPrUrl.current = prUrl;
-    await startReview(prUrl);
+    await startReview(prUrl, selectedSkills);
   };
 
   const handleRetry = () => {
@@ -61,6 +68,12 @@ export default function Home() {
             onSubmit={handleSubmit}
             isLoading={isLoading}
             onReset={reset}
+          />
+
+          <SkillSelector
+            selected={selectedSkills}
+            onChange={setSelectedSkills}
+            disabled={isLoading}
           />
 
           <div ref={resultsRef}>
