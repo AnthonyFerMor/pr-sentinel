@@ -1,0 +1,148 @@
+// ============================================================
+// GITHUB.TS — Servicio de interacción con GitHub API
+// ============================================================
+
+import { Octokit } from 'octokit';
+import { PRInfo, PRMetadata, DiffFile } from './types';
+
+function getOctokit(): Octokit {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) {
+    throw new Error(
+      'GITHUB_TOKEN is not configured. ' +
+      'Set it in .env.local or Vercel Environment Variables.'
+    );
+  }
+  return new Octokit({ auth: token });
+}
+
+/**
+ * Obtiene la metadata de un Pull Request.
+ */
+export async function fetchPRMetadata(pr: PRInfo): Promise<PRMetadata> {
+  const octokit = getOctokit();
+
+  const { data } = await octokit.rest.pulls.get({
+    owner: pr.owner,
+    repo: pr.repo,
+    pull_number: pr.pullNumber,
+  });
+
+  return {
+    title: data.title,
+    body: data.body,
+    author: data.user?.login ?? 'unknown',
+    baseBranch: data.base.ref,
+    headBranch: data.head.ref,
+    filesChanged: data.changed_files,
+    additions: data.additions,
+    deletions: data.deletions,
+    state: data.state,
+    createdAt: data.created_at,
+  };
+}
+
+/**
+ * Obtiene los archivos cambiados en un PR con sus diffs (patches).
+ * Usa paginación automática para obtener TODOS los archivos.
+ */
+export async function fetchPRFiles(pr: PRInfo): Promise<DiffFile[]> {
+  const octokit = getOctokit();
+
+  const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
+    owner: pr.owner,
+    repo: pr.repo,
+    pull_number: pr.pullNumber,
+    per_page: 100,
+  });
+
+  return files.map((file) => {
+    const isBinary = !file.patch;
+    const isLockFile = checkIsLockFile(file.filename);
+    const isGenerated = checkIsGeneratedFile(file.filename);
+
+    return {
+      filename: file.filename,
+      status: file.status as DiffFile['status'],
+      additions: file.additions,
+      deletions: file.deletions,
+      patch: file.patch ?? '',
+      isBinary,
+      isLockFile,
+      isGenerated,
+      priority: calculatePriority(file.filename, isBinary, isLockFile, isGenerated),
+    };
+  });
+}
+
+/**
+ * Postea el review como comentario en el PR.
+ */
+export async function postReviewComment(
+  pr: PRInfo,
+  reviewMarkdown: string
+): Promise<{ commentUrl: string }> {
+  const octokit = getOctokit();
+
+  const { data } = await octokit.rest.issues.createComment({
+    owner: pr.owner,
+    repo: pr.repo,
+    issue_number: pr.pullNumber,
+    body: reviewMarkdown,
+  });
+
+  return { commentUrl: data.html_url };
+}
+
+// === File classification helpers ===
+
+function checkIsLockFile(filename: string): boolean {
+  const lockPatterns = [
+    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+    'Gemfile.lock', 'Cargo.lock', 'poetry.lock',
+    'composer.lock', 'Pipfile.lock', 'go.sum',
+  ];
+  return lockPatterns.some((p) => filename.endsWith(p));
+}
+
+function checkIsGeneratedFile(filename: string): boolean {
+  const patterns = [
+    '.min.js', '.min.css', '.map',
+    '.generated.', '.g.dart',
+    'dist/', 'build/', '.next/',
+    '__snapshots__/',
+    '.svg', '.ico', '.png', '.jpg', '.gif', '.jpeg', '.webp',
+    '.woff', '.woff2', '.ttf', '.eot',
+  ];
+  return patterns.some((p) => filename.includes(p));
+}
+
+function calculatePriority(
+  filename: string,
+  isBinary: boolean,
+  isLockFile: boolean,
+  isGenerated: boolean
+): DiffFile['priority'] {
+  if (isBinary || isLockFile || isGenerated) return 'skip';
+
+  const highExts = [
+    '.ts', '.tsx', '.js', '.jsx', '.py', '.rb', '.go', '.rs',
+    '.java', '.kt', '.cs', '.php', '.sql', '.prisma',
+  ];
+  const highPaths = [
+    'api/', 'server/', 'routes/', 'middleware', 'auth/',
+    'lib/', 'utils/', 'services/', 'database/', 'db/', 'models/',
+  ];
+
+  const ext = '.' + (filename.split('.').pop() ?? '');
+  if (highExts.includes(ext) || highPaths.some((p) => filename.includes(p))) return 'high';
+
+  const medPatterns = [
+    '.json', '.yaml', '.yml', '.toml',
+    '.test.', '.spec.', '.md', '.env',
+    'Dockerfile', 'docker-compose',
+  ];
+  if (medPatterns.some((p) => filename.includes(p))) return 'medium';
+
+  return 'low';
+}
