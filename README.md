@@ -106,7 +106,7 @@ Visit [http://localhost:3000](http://localhost:3000) → redirects to `/login` �
 | Variable | Where to Get |
 |----------|-------------|
 | `NEXTAUTH_SECRET` | Generate: `openssl rand -base64 32` |
-| `NEXTAUTH_URL` | `http://localhost:3001` (dev) or `https://<your-app>.vercel.app` (prod) |
+| `NEXTAUTH_URL` | `http://localhost:3000` (dev) or `https://<your-app>.vercel.app` (prod) |
 | `GITHUB_CLIENT_ID` | GitHub → Settings → Developer Settings → OAuth Apps → Create New |
 | `GITHUB_CLIENT_SECRET` | (same location as above) |
 
@@ -132,8 +132,8 @@ Visit [http://localhost:3000](http://localhost:3000) → redirects to `/login` �
 1. Go to **GitHub → Settings → Developer Settings → OAuth Apps → New OAuth App**
 2. Fill in:
    - **Application name:** PR Sentinel
-   - **Homepage URL:** `http://localhost:3001`
-   - **Authorization callback URL:** `http://localhost:3001/api/auth/callback/github`
+   - **Homepage URL:** `http://localhost:3000`
+   - **Authorization callback URL:** `http://localhost:3000/api/auth/callback/github`
 3. Copy **Client ID** and **Client Secret** into `.env.local`
 4. Run `npm run dev` and login
 
@@ -205,12 +205,12 @@ Visit [http://localhost:3000](http://localhost:3000) → redirects to `/login` �
    ```
 
 2. **Sign in:**
-   - Visit [http://localhost:3001](http://localhost:3001)
+   - Visit [http://localhost:3000](http://localhost:3000)
    - Click "Sign in with GitHub"
    - Authorize OAuth (uses your GitHub account)
 
 3. **Configure API key (optional):**
-   - Go to [/settings](http://localhost:3001/settings)
+   - Go to [/settings](http://localhost:3000/settings)
    - Paste your Gemini API key (from ai.google.dev)
    - Save (encrypted in cookie)
 

@@ -330,6 +330,28 @@ export default function ReviewStream({
             </div>
           </div>
 
+          {/* Clean PR — no findings of any severity */}
+          {(() => {
+            const totalFindings =
+              review.categories.security.length +
+              review.categories.bugs.length +
+              review.categories.performance.length +
+              review.categories.codeQuality.length +
+              review.categories.suggestions.length;
+            if (totalFindings === 0) {
+              return (
+                <div className="bg-gradient-to-br from-emerald-500/10 to-cyan-500/5 border border-emerald-500/30 rounded-2xl p-8 text-center" role="status">
+                  <div className="text-5xl mb-3" aria-hidden="true">✨</div>
+                  <h3 className="text-xl font-bold text-emerald-300">No issues found</h3>
+                  <p className="text-sm text-emerald-200/70 mt-2 max-w-md mx-auto">
+                    PR Sentinel analyzed the diff and found no security, correctness, performance, or quality issues to flag. Ship it!
+                  </p>
+                </div>
+              );
+            }
+            return null;
+          })()}
+
           {/* Findings by category */}
           {renderCategory('🔒 Security', review.categories.security, 'security')}
           {renderCategory('🐛 Bugs', review.categories.bugs, 'bugs')}
