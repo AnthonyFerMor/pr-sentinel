@@ -20,7 +20,7 @@ import {
 } from './github';
 import { processDiff, getChunkingSummary } from './chunking';
 import { analyzeChunk, scoutHotspots, getPrimaryModelName } from './gemini';
-import { formatReviewAsMarkdown, Hotspot } from './prompt';
+import { formatReview, Hotspot } from './prompt';
 import { resolveActiveSkills } from './skills';
 import { ReviewResult, StreamEvent, PRInfo } from './types';
 
@@ -28,6 +28,7 @@ const TWO_PASS_ENABLED = process.env.TWO_PASS_ENABLED?.trim().toLowerCase() === 
 const TWO_PASS_THRESHOLD = Number.parseInt(process.env.TWO_PASS_THRESHOLD ?? '12000', 10);
 
 export type ReviewMode = 'full' | 'lite';
+export type ReviewStyle = 'full' | 'lite' | 'caveman';
 
 export interface RunReviewOptions {
   /** Skill ids a activar. Si se omite, usa los default. */
@@ -52,6 +53,8 @@ export interface RunReviewOptions {
   githubToken?: string;
   /** Review mode: 'full' (default) or 'lite' (reduced token usage). */
   mode?: ReviewMode;
+  /** Output format for the GitHub comment. 'caveman' = ultra-terse, ~70% fewer output tokens. Default = 'full'. */
+  reviewStyle?: ReviewStyle;
 }
 
 export interface RunReviewOutcome {
@@ -151,8 +154,9 @@ async function publishReview(
   emit: (event: StreamEvent) => void,
   updateExisting: boolean,
   githubToken?: string,
+  reviewStyle?: ReviewStyle,
 ): Promise<{ commentUrl?: string; commentError?: string }> {
-  const markdown = formatReviewAsMarkdown(review);
+  const markdown = formatReview(review, reviewStyle);
 
   try {
     if (updateExisting) {
@@ -280,7 +284,7 @@ export async function runReview(
       },
     };
 
-    const published = await publishReview(prInfo, review, emit, updateExisting, githubToken);
+    const published = await publishReview(prInfo, review, emit, updateExisting, githubToken, options.reviewStyle);
     emit({ type: 'complete', data: review });
     return { review, skipped: false, ...published };
   }
@@ -413,7 +417,7 @@ export async function runReview(
   }
 
   // 7. Publish to GitHub (mandatory deliverable)
-  const published = await publishReview(prInfo, review, emit, updateExisting, githubToken);
+  const published = await publishReview(prInfo, review, emit, updateExisting, githubToken, options.reviewStyle);
 
   // 8. Post re-verification summary when updating an existing review
   if (updateExisting && published.commentUrl && previousReviewBody) {
@@ -432,18 +436,21 @@ export async function runReview(
 
       const severity = critCount > 0 ? `${critCount} critical` : highCount > 0 ? `${highCount} high` : 'none critical/high';
 
-      const summary = [
-        '## 🔄 Re-verification Summary\n',
-        `PR Sentinel re-analyzed this PR after new commits (head: \`${metadata.headSha.slice(0, 8)}\`). The main review comment above has been **updated** with the latest analysis.\n`,
-        `**Current findings**: ${totalFindings} total (${severity})`,
-        `- 🔒 Security: ${review.categories.security.length}`,
-        `- 🐛 Bugs: ${review.categories.bugs.length}`,
-        `- ⚡ Performance: ${review.categories.performance.length}`,
-        `- 🧹 Code quality: ${review.categories.codeQuality.length}`,
-        `- 💡 Suggestions: ${review.categories.suggestions.length}`,
-        '',
-        '---\n*🤖 PR Sentinel — automated re-verification*',
-      ].join('\n');
+      // Caveman re-verification = one line. Full = expanded block.
+      const summary = options.reviewStyle === 'caveman'
+        ? `🔄 Re-verified at \`${metadata.headSha.slice(0, 8)}\` → ${totalFindings} findings (${severity}). Main review updated above.`
+        : [
+            '## 🔄 Re-verification Summary\n',
+            `PR Sentinel re-analyzed this PR after new commits (head: \`${metadata.headSha.slice(0, 8)}\`). The main review comment above has been **updated** with the latest analysis.\n`,
+            `**Current findings**: ${totalFindings} total (${severity})`,
+            `- 🔒 Security: ${review.categories.security.length}`,
+            `- 🐛 Bugs: ${review.categories.bugs.length}`,
+            `- ⚡ Performance: ${review.categories.performance.length}`,
+            `- 🧹 Code quality: ${review.categories.codeQuality.length}`,
+            `- 💡 Suggestions: ${review.categories.suggestions.length}`,
+            '',
+            '---\n*🤖 PR Sentinel — automated re-verification*',
+          ].join('\n');
 
       await postReviewComment(prInfo, summary, githubToken);
       emit({ type: 'status', message: '📊 Re-verification summary posted.' });

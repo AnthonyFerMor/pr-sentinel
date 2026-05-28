@@ -5,11 +5,14 @@
 // ============================================================
 
 import { NextRequest } from 'next/server';
-import { runReview, ReviewMode } from '@/lib/run-review';
+import { runReview, ReviewMode, ReviewStyle } from '@/lib/run-review';
 import { GeminiServiceError } from '@/lib/gemini';
 import { StreamEvent } from '@/lib/types';
 import { auth } from '@/lib/auth';
 import { getUserKeys } from '@/lib/session';
+import { getUserConfig } from '@/lib/storage';
+
+const VALID_STYLES: readonly ReviewStyle[] = ['full', 'lite', 'caveman'] as const;
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -29,10 +32,11 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const { prUrl, skills: skillIds, mode } = (body ?? {}) as {
+  const { prUrl, skills: skillIds, mode, reviewStyle: bodyStyle } = (body ?? {}) as {
     prUrl?: unknown;
     skills?: unknown;
     mode?: unknown;
+    reviewStyle?: unknown;
   };
 
   if (!prUrl || typeof prUrl !== 'string') {
@@ -53,6 +57,16 @@ export async function POST(request: NextRequest) {
   const githubToken = session?.accessToken;
   const geminiApiKey = userKeys.geminiApiKey;
 
+  // Resolve reviewStyle: body override (ad-hoc) > user KV preference > default 'full'.
+  let reviewStyle: ReviewStyle | undefined =
+    typeof bodyStyle === 'string' && VALID_STYLES.includes(bodyStyle as ReviewStyle)
+      ? (bodyStyle as ReviewStyle)
+      : undefined;
+  if (!reviewStyle && session?.user?.id) {
+    const cfg = await getUserConfig(session.user.id);
+    reviewStyle = cfg?.reviewStyle;
+  }
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -68,6 +82,7 @@ export async function POST(request: NextRequest) {
           geminiApiKey,
           githubToken,
           mode: reviewMode,
+          reviewStyle,
         });
       } catch (error) {
         const msg =

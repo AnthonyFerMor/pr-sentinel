@@ -16,7 +16,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runReview } from '@/lib/run-review';
 import { handleCommentEvent } from '@/lib/conversational';
 import { parsePRUrl } from '@/lib/parser';
-import { getRepoOwner, getUserConfig } from '@/lib/storage';
+import { getRepoOwner, getUserConfig, ReviewStyle } from '@/lib/storage';
 
 /**
  * Resolve the credentials to use for a webhook-triggered review.
@@ -33,7 +33,7 @@ import { getRepoOwner, getUserConfig } from '@/lib/storage';
 async function resolveCredentials(
   owner: string,
   repo: string,
-): Promise<{ githubToken?: string; geminiApiKey?: string; userId?: string }> {
+): Promise<{ githubToken?: string; geminiApiKey?: string; userId?: string; reviewStyle?: ReviewStyle }> {
   try {
     const userId = await getRepoOwner(owner, repo);
     if (!userId) return {};
@@ -42,6 +42,7 @@ async function resolveCredentials(
       userId,
       githubToken: cfg?.githubPAT,
       geminiApiKey: cfg?.geminiApiKey,
+      reviewStyle: cfg?.reviewStyle,
     };
   } catch (err) {
     console.warn('[webhook] credential lookup failed, falling back to server:', err);
@@ -125,6 +126,7 @@ function handlePullRequest(payload: PullRequestPayload) {
         softDeadlineMs: (maxDuration - 5) * 1000,
         githubToken: creds.githubToken,
         geminiApiKey: creds.geminiApiKey,
+        reviewStyle: creds.reviewStyle,
       });
       console.log(
         `[webhook] ${fullName} ${action} → ` +

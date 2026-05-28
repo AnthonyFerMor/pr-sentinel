@@ -22,9 +22,13 @@
 import { Redis } from '@upstash/redis';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 
+export type ReviewStyle = 'full' | 'lite' | 'caveman';
+
 export interface UserConfig {
   geminiApiKey?: string;
   githubPAT?: string;
+  /** Output format for PR review comments. Default = 'full'. User opt-in for 'caveman' (token-saving). */
+  reviewStyle?: ReviewStyle;
 }
 
 export interface EnabledRepo {
@@ -121,11 +125,13 @@ const k = {
 interface EncryptedUserConfig {
   geminiApiKey?: string; // encrypted
   githubPAT?: string;    // encrypted
+  reviewStyle?: ReviewStyle; // plaintext (non-sensitive preference)
 }
 
 /**
  * Saves (or merges) user config. Fields set to undefined are left alone;
  * fields set to empty string are deleted. Fields with a value are encrypted.
+ * `reviewStyle` is non-sensitive so stored as plain enum.
  */
 export async function saveUserConfig(userId: string, partial: UserConfig): Promise<void> {
   const redis = getRedis();
@@ -142,6 +148,9 @@ export async function saveUserConfig(userId: string, partial: UserConfig): Promi
     if (partial.githubPAT === '') delete next.githubPAT;
     else next.githubPAT = encrypt(partial.githubPAT);
   }
+  if (partial.reviewStyle !== undefined) {
+    next.reviewStyle = partial.reviewStyle;
+  }
 
   await redis.set(k.user(userId), next);
 }
@@ -157,6 +166,7 @@ export async function getUserConfig(userId: string): Promise<UserConfig | null> 
   return {
     geminiApiKey: stored.geminiApiKey ? decrypt(stored.geminiApiKey) ?? undefined : undefined,
     githubPAT: stored.githubPAT ? decrypt(stored.githubPAT) ?? undefined : undefined,
+    reviewStyle: stored.reviewStyle,
   };
 }
 

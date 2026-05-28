@@ -15,7 +15,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { getUserKeys, setUserKeys } from '@/lib/session';
-import { getUserConfig, saveUserConfig, isStorageAvailable } from '@/lib/storage';
+import { getUserConfig, saveUserConfig, isStorageAvailable, ReviewStyle } from '@/lib/storage';
+
+const VALID_STYLES: readonly ReviewStyle[] = ['full', 'lite', 'caveman'] as const;
 
 function maskKey(key: string): string {
   if (key.length <= 8) return '••••••••';
@@ -39,6 +41,7 @@ export async function GET() {
     geminiKeyMasked: geminiKey ? maskKey(geminiKey) : null,
     githubPATSet: !!githubPAT,
     githubPATMasked: githubPAT ? maskKey(githubPAT) : null,
+    reviewStyle: kvCfg?.reviewStyle ?? 'full',
     storageAvailable: isStorageAvailable(),
   });
 }
@@ -49,7 +52,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { geminiApiKey?: string; githubPAT?: string };
+  let body: { geminiApiKey?: string; githubPAT?: string; reviewStyle?: string };
   try {
     body = await request.json();
   } catch {
@@ -63,12 +66,19 @@ export async function POST(request: NextRequest) {
   if (body.githubPAT !== undefined && typeof body.githubPAT !== 'string') {
     return NextResponse.json({ error: 'githubPAT must be a string' }, { status: 400 });
   }
+  if (body.reviewStyle !== undefined && !VALID_STYLES.includes(body.reviewStyle as ReviewStyle)) {
+    return NextResponse.json(
+      { error: `reviewStyle must be one of: ${VALID_STYLES.join(', ')}` },
+      { status: 400 },
+    );
+  }
 
   // Persist to KV (authoritative). Empty string deletes the field.
   if (isStorageAvailable()) {
     await saveUserConfig(session.user.id, {
       geminiApiKey: body.geminiApiKey,
       githubPAT: body.githubPAT,
+      reviewStyle: body.reviewStyle as ReviewStyle | undefined,
     });
   }
 
@@ -83,6 +93,7 @@ export async function POST(request: NextRequest) {
     geminiKeyMasked: body.geminiApiKey ? maskKey(body.geminiApiKey) : null,
     githubPATSet: !!body.githubPAT,
     githubPATMasked: body.githubPAT ? maskKey(body.githubPAT) : null,
+    reviewStyle: body.reviewStyle as ReviewStyle | undefined,
     storageAvailable: isStorageAvailable(),
   });
 }

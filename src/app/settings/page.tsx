@@ -41,6 +41,12 @@ export default function SettingsPage() {
   const [patMessage, setPatMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [storageAvailable, setStorageAvailable] = useState<boolean | null>(null);
 
+  // Review style preference: full (default markdown) | lite | caveman (ultra-terse, token-saving)
+  type ReviewStyle = 'full' | 'lite' | 'caveman';
+  const [reviewStyle, setReviewStyle] = useState<ReviewStyle>('full');
+  const [savingStyle, setSavingStyle] = useState(false);
+  const [styleMessage, setStyleMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.push('/login');
@@ -55,6 +61,9 @@ export default function SettingsPage() {
         if (data.geminiKeySet) setMaskedKey(data.geminiKeyMasked);
         if (data.githubPATSet) setMaskedPat(data.githubPATMasked);
         if (typeof data.storageAvailable === 'boolean') setStorageAvailable(data.storageAvailable);
+        if (data.reviewStyle === 'full' || data.reviewStyle === 'lite' || data.reviewStyle === 'caveman') {
+          setReviewStyle(data.reviewStyle);
+        }
       })
       .catch(() => {});
 
@@ -126,6 +135,29 @@ export default function SettingsPage() {
       setPatMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
     } finally {
       setSavingPat(false);
+    }
+  };
+
+  const handleSaveStyle = async (newStyle: ReviewStyle) => {
+    setSavingStyle(true);
+    setStyleMessage(null);
+    const prev = reviewStyle;
+    setReviewStyle(newStyle); // optimistic
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewStyle: newStyle }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to save');
+      const styleLabel = newStyle === 'caveman' ? 'Caveman (token-saving)' : newStyle === 'lite' ? 'Lite' : 'Full markdown';
+      setStyleMessage({ type: 'success', text: `Review style set to ${styleLabel}. Applies to all new reviews.` });
+    } catch (err) {
+      setReviewStyle(prev); // revert on error
+      setStyleMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
+    } finally {
+      setSavingStyle(false);
     }
   };
 
@@ -440,6 +472,97 @@ export default function SettingsPage() {
                 }`}>
                   <span aria-hidden="true">{patMessage.type === 'success' ? '✓' : '⚠'}</span>
                   <span>{patMessage.text}</span>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Review Style — opt-in token-saving caveman mode */}
+          <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+                <span className="text-pink-400">🪶</span>
+                Review Output Style
+              </h3>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-pink-500/10 border border-pink-500/20">
+                <span className="h-1.5 w-1.5 rounded-full bg-pink-500" />
+                <span className="text-xs text-pink-400 font-medium capitalize">{reviewStyle}</span>
+              </span>
+            </div>
+
+            <div className="p-6">
+              <p className="text-sm text-gray-400 mb-4 leading-relaxed">
+                How PR Sentinel formats the review comment it posts on your PRs. Caveman mode is
+                opt-in and trades verbose markdown for a one-line-per-finding format. Faster to read
+                for experienced devs and uses ~70% fewer output tokens (cheaper).
+              </p>
+
+              <div className="grid gap-2">
+                {([
+                  {
+                    id: 'full' as const,
+                    label: 'Full markdown',
+                    icon: '📄',
+                    desc: 'Detailed review with metadata table, expanded fix explanations. Default.',
+                  },
+                  {
+                    id: 'lite' as const,
+                    label: 'Lite',
+                    icon: '⚡',
+                    desc: 'Same markdown shape, but the analysis itself uses fewer skills + chunks to save tokens.',
+                  },
+                  {
+                    id: 'caveman' as const,
+                    label: 'Caveman (token-saving)',
+                    icon: '🦴',
+                    desc: 'One line per finding: file:L42 severity: problem. Fix: ... Tally at end. ~70% fewer output tokens.',
+                  },
+                ]).map((opt) => {
+                  const active = reviewStyle === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => !savingStyle && handleSaveStyle(opt.id)}
+                      disabled={savingStyle}
+                      className={`text-left flex items-start gap-3 p-3 rounded-xl border transition disabled:opacity-50 ${
+                        active
+                          ? 'border-pink-500/50 bg-pink-500/10'
+                          : 'border-white/10 bg-gray-950/40 hover:border-white/20 hover:bg-gray-900/60'
+                      }`}
+                    >
+                      <span className="text-xl mt-0.5" aria-hidden="true">{opt.icon}</span>
+                      <span className="flex-1 min-w-0">
+                        <span className="flex items-center gap-2">
+                          <span className={`text-sm font-semibold ${active ? 'text-pink-300' : 'text-gray-200'}`}>
+                            {opt.label}
+                          </span>
+                          {active && (
+                            <span className="text-[10px] text-pink-400 bg-pink-500/15 border border-pink-500/30 rounded-full px-2 py-0.5 uppercase tracking-wider">
+                              Active
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-xs text-gray-400 mt-0.5 leading-relaxed">{opt.desc}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {storageAvailable === false && (
+                <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+                  ⚠ Persistent storage (Vercel KV) is not configured. Your style choice will not
+                  persist across sessions and the auto-bot will fall back to Full markdown.
+                </div>
+              )}
+
+              {styleMessage && (
+                <div className={`mt-3 flex items-start gap-2 text-sm ${
+                  styleMessage.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  <span aria-hidden="true">{styleMessage.type === 'success' ? '✓' : '⚠'}</span>
+                  <span>{styleMessage.text}</span>
                 </div>
               )}
             </div>
