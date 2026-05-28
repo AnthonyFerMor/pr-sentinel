@@ -80,11 +80,15 @@ export class GeminiServiceError extends Error {
 }
 
 function getClient(userApiKey?: string): GoogleGenAI {
-  const apiKey = userApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+  // Production model: users provide their own Gemini API key. The server no
+  // longer ships an env-var fallback — that was a hackathon convenience that
+  // would let the shared key get exhausted under any real load. Get a free
+  // key at https://ai.google.dev and save it in /settings.
+  const apiKey = userApiKey?.trim();
   if (!apiKey) {
     throw new Error(
-      'GEMINI_API_KEY is not configured. ' +
-        'Get your key at https://ai.google.dev and set it in .env.local or in Settings.'
+      'No Gemini API key configured. Add yours in Settings (free at https://ai.google.dev). ' +
+        'PR Sentinel runs on your key — no shared server quota.'
     );
   }
   return new GoogleGenAI({ apiKey });

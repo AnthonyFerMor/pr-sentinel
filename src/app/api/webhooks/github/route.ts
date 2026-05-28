@@ -175,8 +175,13 @@ function handleIssueComment(payload: IssueCommentPayload) {
     return NextResponse.json({ ok: true, ignored: 'could not parse PR URL from issue_comment' });
   }
 
+  // Resolve repo owner's credentials so the reply uses their PAT + Gemini key.
+  const fullName = payload.repository?.full_name ?? '';
+  const [owner, repo] = fullName.split('/');
+
   after(async () => {
     try {
+      const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
       const result = await handleCommentEvent(
         prInfo,
         {
@@ -186,6 +191,7 @@ function handleIssueComment(payload: IssueCommentPayload) {
           htmlUrl: comment.html_url ?? '',
         },
         `PR #${prInfo.pullNumber}`,
+        { geminiApiKey: creds.geminiApiKey, githubToken: creds.githubToken },
       );
 
       if (!result) {
@@ -228,8 +234,12 @@ function handleReviewComment(payload: ReviewCommentPayload) {
     return NextResponse.json({ ok: true, ignored: 'could not parse PR URL from review_comment' });
   }
 
+  const fullName = payload.repository?.full_name ?? '';
+  const [owner, repo] = fullName.split('/');
+
   after(async () => {
     try {
+      const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
       const result = await handleCommentEvent(
         prInfo,
         {
@@ -240,6 +250,7 @@ function handleReviewComment(payload: ReviewCommentPayload) {
           inReplyToId: comment.in_reply_to_id,
         },
         payload.pull_request?.title ?? `PR #${prInfo.pullNumber}`,
+        { geminiApiKey: creds.geminiApiKey, githubToken: creds.githubToken },
       );
 
       if (!result) {
