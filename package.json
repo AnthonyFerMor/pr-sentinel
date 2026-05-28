@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node tests/unit.mjs",
+    "test:integration": "bash tests/integration.sh"
   },
   "dependencies": {
     "@google/genai": "^2.6.0",
