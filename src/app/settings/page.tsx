@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
+import Aurora from '@/components/Aurora';
 
 interface CacheStats {
   primaryModel?: string;
@@ -108,7 +109,7 @@ export default function SettingsPage() {
       if (!response.ok) throw new Error('Failed to clear');
       setMaskedKey(null);
       setGeminiKey('');
-      setMessage({ type: 'success', text: 'API key removed. Server default will be used.' });
+      setMessage({ type: 'success', text: 'API key removed. You must add a new one before running reviews.' });
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Clear failed' });
     } finally {
@@ -201,16 +202,26 @@ export default function SettingsPage() {
   return (
     <>
       <Header />
-      <main className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(120,80,255,0.15),transparent)] pointer-events-none" />
+      <main className="relative min-h-screen bg-[var(--surface-0)] text-white overflow-hidden">
+        <Aurora />
 
-        <div className="relative max-w-3xl mx-auto px-4 pt-10 pb-20">
+        <div className="relative z-10 max-w-3xl mx-auto px-5 sm:px-6 pt-12 sm:pt-14 pb-24">
           {/* Header */}
-          <div className="mb-8">
-            <h2 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Settings</h2>
-            <p className="text-gray-400 text-sm mt-1">
-              Manage your account, API keys, and view system status.
+          <div className="mb-10 animate-slideUp">
+            <span className="step-pill mb-3">Account Configuration</span>
+            <h2 className="text-3xl md:text-4xl font-bold text-white tracking-tight mt-2">
+              Settings
+            </h2>
+            <p className="text-gray-400 text-base mt-2 leading-relaxed">
+              Manage your account, API keys, and review preferences.
             </p>
+
+            {/* Setup checklist — quick visual on what's configured */}
+            <div className="mt-6 flex flex-wrap gap-2">
+              <SetupChip done={true} label="GitHub OAuth" />
+              <SetupChip done={!!maskedKey} label="Gemini key" required={!maskedKey} />
+              <SetupChip done={!!maskedPat} label="GitHub PAT" optional={!maskedPat} />
+            </div>
           </div>
 
           {/* Account */}
@@ -287,19 +298,20 @@ export default function SettingsPage() {
               {maskedKey ? (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  <span className="text-xs text-emerald-400 font-medium">Your key</span>
+                  <span className="text-xs text-emerald-400 font-medium">Active</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                  <span className="text-xs text-amber-400 font-medium">Using fallback</span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/20">
+                  <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
+                  <span className="text-xs text-rose-400 font-medium">Required</span>
                 </span>
               )}
             </div>
 
             <div className="p-6">
               <p className="text-sm text-gray-400 mb-4 leading-relaxed">
-                Get a free key from{' '}
+                <strong className="text-gray-200">Required.</strong> PR Sentinel runs on your own
+                Gemini quota — no shared server key. Get a free key at{' '}
                 <a
                   href="https://ai.google.dev"
                   target="_blank"
@@ -308,8 +320,7 @@ export default function SettingsPage() {
                 >
                   Google AI Studio
                 </a>
-                . Stored encrypted in an httpOnly cookie, never sent to the browser after save.
-                Without your own key, reviews use the shared server fallback (slower under load).
+                . Stored encrypted server-side (AES-256-GCM), never exposed to the browser after save.
               </p>
 
               {maskedKey && (
@@ -644,7 +655,7 @@ export default function SettingsPage() {
               </li>
               <li className="flex gap-2">
                 <span className="text-blue-400">•</span>
-                Auto-bot webhooks fire with <em>your</em> PAT + Gemini key (or server default if you don&apos;t set them).
+                Auto-bot webhooks fire with <em>your</em> PAT + Gemini key. No shared server quota.
               </li>
               <li className="flex gap-2">
                 <span className="text-blue-400">•</span>
@@ -656,6 +667,49 @@ export default function SettingsPage() {
       </main>
     </>
   );
+}
+
+function SetupChip({
+  done,
+  label,
+  required,
+  optional,
+}: {
+  done: boolean;
+  label: string;
+  required?: boolean;
+  optional?: boolean;
+}) {
+  if (done) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-medium text-emerald-300">
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        {label}
+      </span>
+    );
+  }
+  if (required) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/25 text-[11px] font-medium text-rose-300">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="animate-pulseRing absolute inline-flex h-full w-full rounded-full bg-rose-400" />
+          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-rose-400" />
+        </span>
+        {label} required
+      </span>
+    );
+  }
+  if (optional) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/10 text-[11px] font-medium text-gray-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-gray-500" />
+        {label} (optional)
+      </span>
+    );
+  }
+  return null;
 }
 
 function CacheStat({ label, value, color }: { label: string; value: string | number; color: 'emerald' | 'amber' | 'violet' | 'cyan' }) {
