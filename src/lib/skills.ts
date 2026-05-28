@@ -127,6 +127,79 @@ export const SKILLS: Skill[] = [
 - Flag assertions that cannot fail, snapshot-only tests for logic, and happy-path-only coverage of security/auth code.
 - Testing findings are suggestions/low unless untested code is security- or data-critical.`,
   },
+  {
+    id: 'dependencies',
+    name: 'Dependency safety',
+    description: 'Deprecated packages, known CVEs, license conflicts, version pinning issues.',
+    icon: '📦',
+    defaultEnabled: true,
+    promptFragment: `### 📦 DEPENDENCY SAFETY
+ONLY flag when the diff modifies package.json, package-lock.json, requirements.txt, Cargo.toml, go.mod, Gemfile, or similar manifests.
+- Packages with known security advisories or active CVEs (look at name + version)
+- Deprecated/abandoned packages still being added (e.g., \`request\`, \`node-uuid\`, \`crypto\` polyfills in Node 18+, deprecated babel plugins)
+- Unpinned versions ("*", "latest", "^x.y.z" on critical security libs) where a tight pin is safer
+- License conflicts: GPL/AGPL packages added to a project that distributes commercially
+- Pulling in massive dependencies for trivial features ("left-pad" anti-pattern) — flag tree-bloat
+- Direct dependency on packages that should be peerDependencies (React, Next.js, etc.) in libraries
+- New devDependencies that should be dependencies, or vice versa
+- Lock-file desync: package.json updated but lock file not regenerated (or vice versa)
+Do NOT flag every dependency change — only when there's a concrete risk.`,
+    rubricFragment: `Dependency checklist:
+- Severity: critical for known-exploited CVEs; high for deprecated security-sensitive libs; medium for licensing/version-pinning; low for tree-bloat.
+- Be specific: name the package, the risk, and an alternative ("replace X with Y because Z").
+- If you don't recognize the package, do not invent vulnerabilities. Flag only well-known issues.
+- Lock files alone should not generate findings — they're regenerated mechanically. Focus on the manifest.`,
+  },
+  {
+    id: 'migrations',
+    name: 'Migration & schema safety',
+    description: 'DB migrations, breaking schema changes, backward compatibility.',
+    icon: '🗄️',
+    defaultEnabled: true,
+    promptFragment: `### 🗄️ MIGRATION & SCHEMA SAFETY
+ONLY flag when the diff modifies SQL migration files, schema.prisma, ORM models, or DB schema files.
+- Adding a NOT NULL column without a default — breaks INSERTs on existing rows
+- DROP TABLE / DROP COLUMN without a deprecation step — silently destroys data
+- Renaming columns/tables without a backward-compatible migration path
+- Adding UNIQUE constraint on a column with existing duplicates — migration will fail
+- Index changes that lock large tables in production (PostgreSQL: missing CONCURRENTLY)
+- Migration that is not idempotent / cannot be re-run safely
+- Migration that requires a long-running data backfill but runs synchronously
+- Foreign key changes that don't account for existing rows pointing to soon-to-be-deleted parents
+- Breaking schema changes shipped together with code that still expects the old schema (deploy ordering risk)
+- Schema field type widening/narrowing (string → int, nullable → not null) without conversion logic`,
+    rubricFragment: `Migration checklist:
+- Severity: critical for data loss / migration failure; high for production locks or non-reversible changes; medium for ordering risks; low for style.
+- Always suggest a safe ordering: deploy code that handles both shapes → run migration → deploy code that only handles new shape.
+- For SQLite (Notesy-style apps): no concurrent ALTER, schema changes lock the whole DB briefly — acceptable but flag if migration runs at request time.
+- Prisma: flag \`prisma migrate dev\` artifacts committed to production migration directories.`,
+  },
+  {
+    id: 'api-contract',
+    name: 'API contract',
+    description: 'Breaking changes in REST/GraphQL endpoints, response shapes, headers.',
+    icon: '🔌',
+    defaultEnabled: true,
+    promptFragment: `### 🔌 API CONTRACT
+ONLY flag when the diff modifies HTTP route handlers, RPC definitions, GraphQL schema, or OpenAPI/Swagger files.
+- Removed endpoint or HTTP method on existing route — clients will 404/405
+- Renamed query parameter, path parameter, or request body field — silent client breakage
+- Removed/renamed field in response shape — breaks deserialization
+- Changed field type in response (string → int, array → object, nullable → not null) — breaks typed clients
+- New REQUIRED request field added without defaulting — existing clients fail validation
+- HTTP status code change for the same logical outcome (200 → 204, 200 → 201) — flaky for clients checking exact codes
+- Auth scheme change on existing endpoint (Bearer → cookie, public → authed)
+- Pagination shape change (offset → cursor, page → token)
+- Error response shape change — clients parsing error.code break
+- Header changes: removed CORS allowed origin, changed Content-Type, added required custom header
+- GraphQL: nullability change on field, removed field, renamed enum value
+Do NOT flag pure additions of new optional fields — those are backward-compatible.`,
+    rubricFragment: `API contract checklist:
+- Severity: critical for removed endpoints / required fields with no migration; high for response-shape breaks; medium for status-code or header changes; low for naming style.
+- Suggest a versioning strategy when applicable: keep the old endpoint, add the new one, deprecate gradually.
+- A "fix" is often: add the new field/endpoint, keep the old one working, document the deprecation.
+- Internal-only APIs (clearly not exposed externally) reduce severity by one level.`,
+  },
 ];
 
 const SKILL_BY_ID = new Map(SKILLS.map((skill) => [skill.id, skill]));
