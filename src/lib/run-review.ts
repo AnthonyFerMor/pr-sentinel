@@ -24,7 +24,9 @@ import { analyzeChunk, scoutHotspots, getPrimaryModelName } from './gemini';
 import { formatReview, formatInlineComment, formatInlineReviewBody, Hotspot } from './prompt';
 import { buildValidLineMap, partitionFindings } from './patch-lines';
 import { resolveActiveSkills } from './skills';
-import { ReviewResult, StreamEvent, PRInfo, DiffFile } from './types';
+import { calculateRiskScore } from './risk-score';
+import { recordReview, pushRecentReview } from './storage';
+import { ReviewResult, StreamEvent, PRInfo, DiffFile, PRMetadata } from './types';
 
 // Máximo de comentarios inline en una sola review request (la API tiene un
 // límite suave y comentarios muy abundantes generan ruido). Si hay más, los
@@ -68,6 +70,8 @@ export interface RunReviewOptions {
    * Default = true: más útil para el desarrollador.
    */
   inlineMode?: boolean;
+  /** User ID para trackear stats en KV. Opcional. */
+  userId?: string;
 }
 
 export interface RunReviewOutcome {
@@ -182,7 +186,12 @@ async function publishReview(
   updateExisting: boolean,
   githubToken?: string,
   reviewStyle?: ReviewStyle,
-  options?: { inlineMode?: boolean; diffFiles?: DiffFile[]; headSha?: string },
+  options?: {
+    inlineMode?: boolean;
+    diffFiles?: DiffFile[];
+    headSha?: string;
+    prSize?: { additions?: number; deletions?: number; filesChanged?: number };
+  },
 ): Promise<{ commentUrl?: string; commentError?: string }> {
   const inlineMode = options?.inlineMode ?? false;
   const diffFiles = options?.diffFiles;
@@ -208,7 +217,7 @@ async function publishReview(
       const inlineOverflow = sortedInline.slice(MAX_INLINE_COMMENTS);
       const leftover = [...partition.leftover, ...inlineOverflow.map((i) => ({ finding: i.finding, category: i.category }))];
 
-      const body = formatInlineReviewBody(review, inlineKept.length, leftover);
+      const body = formatInlineReviewBody(review, inlineKept.length, leftover, options?.prSize);
       const comments = inlineKept.map((entry) => ({
         path: entry.finding.file,
         line: entry.line,
@@ -530,7 +539,16 @@ export async function runReview(
     updateExisting,
     githubToken,
     options.reviewStyle,
-    { inlineMode, diffFiles: processedDiff.files, headSha: metadata.headSha },
+    {
+      inlineMode,
+      diffFiles: processedDiff.files,
+      headSha: metadata.headSha,
+      prSize: {
+        additions: metadata.additions,
+        deletions: metadata.deletions,
+        filesChanged: metadata.filesChanged,
+      },
+    },
   );
 
   // 8. Post re-verification summary when updating an existing review
@@ -574,7 +592,69 @@ export async function runReview(
     }
   }
 
+  // 9. Track stats (best-effort, never fails the review).
+  if (options.userId) {
+    await trackStats(options.userId, review, metadata, prInfo, published.commentUrl);
+  }
+
   emit({ type: 'complete', data: review });
 
   return { review, skipped: false, ...published };
+}
+
+/**
+ * Suma esta review a los contadores del usuario en KV. Best-effort, no lanza.
+ * Llamado al final de runReview cuando hay userId.
+ */
+async function trackStats(
+  userId: string,
+  review: ReviewResult,
+  metadata: PRMetadata,
+  prInfo: PRInfo,
+  commentUrl?: string,
+): Promise<void> {
+  try {
+    const sev = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    for (const [, findings] of Object.entries(review.categories)) {
+      for (const f of findings) {
+        if (f.severity in sev) sev[f.severity] += 1;
+      }
+    }
+    const byCategory = {
+      security: review.categories.security.length,
+      bugs: review.categories.bugs.length,
+      performance: review.categories.performance.length,
+      codeQuality: review.categories.codeQuality.length,
+      suggestions: review.categories.suggestions.length,
+    };
+    const findingsCount =
+      byCategory.security + byCategory.bugs + byCategory.performance + byCategory.codeQuality + byCategory.suggestions;
+
+    await Promise.all([
+      recordReview(userId, {
+        findings: sev,
+        byCategory,
+        tokensUsed: review.metadata.totalTokens,
+        cacheHit: review.metadata.cacheHit,
+      }),
+      pushRecentReview(userId, {
+        prUrl: prInfo.url,
+        prTitle: metadata.title,
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        pullNumber: prInfo.pullNumber,
+        riskLevel: review.overallRiskLevel,
+        riskScore: calculateRiskScore(review, {
+          additions: metadata.additions,
+          deletions: metadata.deletions,
+          filesChanged: metadata.filesChanged,
+        }).score,
+        findingsCount,
+        reviewedAt: Date.now(),
+        commentUrl,
+      }),
+    ]);
+  } catch (err) {
+    console.warn('[run-review] stats tracking failed (non-fatal):', err);
+  }
 }

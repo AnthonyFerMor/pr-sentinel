@@ -21,6 +21,7 @@ export default function Header() {
 
   const navLinks = [
     { href: '/', label: 'Review' },
+    { href: '/dashboard', label: 'Dashboard' },
     { href: '/repositories', label: 'Auto-bot' },
     { href: '/settings', label: 'Settings' },
   ];

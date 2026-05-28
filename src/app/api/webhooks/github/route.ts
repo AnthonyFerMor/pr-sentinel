@@ -131,6 +131,7 @@ function handlePullRequest(payload: PullRequestPayload) {
         geminiApiKey: creds.geminiApiKey,
         reviewStyle: creds.reviewStyle,
         inlineMode: creds.inlineMode ?? true,
+        userId: creds.userId,
       });
       console.log(
         `[webhook] ${fullName} ${action} → ` +

@@ -6,6 +6,7 @@ import { Type } from '@google/genai';
 import { PRMetadata, DiffFile, ReviewResult } from './types';
 import { buildReviewMarker } from './review-marker';
 import { Skill, resolveActiveSkills } from './skills';
+import { calculateRiskScore, formatRiskScoreBlock } from './risk-score';
 
 /**
  * System prompt para el agente de revisión de PRs.
@@ -333,6 +334,11 @@ When you report a finding:
 - Set \`lineRange\` as a display string (e.g. "L42" or "L42-L48") matching the numbers above.
 - NEVER invent a line number. NEVER pick a number that doesn't appear in the diff. NEVER use a number from a \`-\` (deleted) line.
 
+Auto-fix suggestions (highly preferred when applicable):
+- Whenever the fix is a contiguous, mechanical edit of the lines from \`startLine\` (or \`lineNumber\` if single-line) up to \`lineNumber\`, populate \`replacementCode\` with the EXACT source text that should replace those lines.
+- No backticks, no code fences, no "// before" or "// after" markers — just raw code, as it should appear in the file. Preserve indentation.
+- Skip \`replacementCode\` when the fix needs new imports elsewhere, multiple non-contiguous edits, or a wider refactor. A wrong auto-fix is worse than no auto-fix.
+
 ## ANALYSIS INSTRUCTIONS
 Use your thinking to deeply analyze the code before producing findings. For each file:
 1. Identify what the code DOES (endpoint? component? utility?)
@@ -473,6 +479,15 @@ function getFindingSchema() {
       description: { type: Type.STRING, description: 'Detailed explanation: what the bug is, the data flow from source to sink, and why it is dangerous' },
       impact: { type: Type.STRING, description: 'What happens if this issue is exploited or triggered in production — concrete scenario, not generic risk' },
       suggestion: { type: Type.STRING, description: 'Concrete fix with actual code showing exactly what to change. Include before/after when possible.' },
+      replacementCode: {
+        type: Type.STRING,
+        description:
+          'Optional: the EXACT literal source code that should replace the range startLine..lineNumber, ' +
+          'without backticks, without markdown fences, without "// before" or "// after" comments. ' +
+          'Provide this ONLY when the fix is a mechanical, in-place replacement of a contiguous range. ' +
+          'GitHub will render this as a one-click "Apply suggestion" button. ' +
+          'Omit if the fix requires changes spanning more than the cited lines or new imports elsewhere.',
+      },
       cweId: { type: Type.STRING, description: 'CWE ID for security issues, e.g. "CWE-89" for SQL injection, "CWE-79" for XSS' },
     },
     required: ['title', 'severity', 'file', 'lineNumber', 'description', 'impact', 'suggestion'],
@@ -501,6 +516,12 @@ export function formatReviewAsMarkdown(review: ReviewResult): string {
 
   let md = marker + `# 🤖 PR Sentinel — Automated Code Review\n\n`;
   md += `## ${riskEmoji[review.overallRiskLevel] ?? '❓'} Overall Risk: **${review.overallRiskLevel.toUpperCase()}**\n\n`;
+
+  // Risk score block (best-effort; never break the post if scoring throws).
+  try {
+    md += formatRiskScoreBlock(calculateRiskScore(review));
+  } catch {}
+
   md += `${review.summary}\n\n`;
 
   // Cache metadata
@@ -671,8 +692,25 @@ const CATEGORY_LABEL: Record<string, string> = {
 };
 
 /**
+ * Sanea código de reemplazo antes de envolverlo en un suggestion block.
+ * Quita fences markdown si el modelo los añadió por error, y normaliza
+ * line endings.
+ */
+function cleanReplacement(code: string): string {
+  let cleaned = code.replace(/\r\n/g, '\n');
+  // Strip surrounding markdown code fence if present.
+  const fenceMatch = cleaned.match(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```\s*$/);
+  if (fenceMatch) cleaned = fenceMatch[1];
+  return cleaned.replace(/\n+$/, '');
+}
+
+/**
  * Formatea un finding como cuerpo de comentario inline (corto, accionable).
  * Pensado para verse bien en el panel de "Files changed" de GitHub.
+ *
+ * Si el finding incluye `replacementCode` y el comentario está anclado a un
+ * rango contiguo, añadimos un bloque ```suggestion``` que GitHub renderiza con
+ * botón "Apply suggestion" → el dev hace commit del fix con un click.
  */
 export function formatInlineComment(
   finding: import('./types').ReviewFinding,
@@ -685,7 +723,17 @@ export function formatInlineComment(
   let body = `**${sev} ${cat} — ${finding.severity.toUpperCase()}: ${finding.title}**${cwe}\n\n`;
   body += `${finding.description}\n\n`;
   if (finding.impact) body += `> ⚠️ **Impact:** ${finding.impact}\n\n`;
-  body += `**Suggested fix:**\n\n${finding.suggestion}\n\n`;
+
+  if (finding.replacementCode && finding.replacementCode.trim()) {
+    const cleaned = cleanReplacement(finding.replacementCode);
+    body += `**Suggested fix** (click _Apply suggestion_ to commit):\n\n`;
+    body += '```suggestion\n' + cleaned + '\n```\n\n';
+    // Show the prose explanation below for context.
+    body += `<details><summary>Why this fix</summary>\n\n${finding.suggestion}\n\n</details>\n\n`;
+  } else {
+    body += `**Suggested fix:**\n\n${finding.suggestion}\n\n`;
+  }
+
   body += `<sub>🤖 PR Sentinel</sub>`;
   return body;
 }
@@ -700,6 +748,7 @@ export function formatInlineReviewBody(
   review: ReviewResult,
   inlineCount: number,
   leftover: Array<{ finding: import('./types').ReviewFinding; category: string }>,
+  prSize?: { additions?: number; deletions?: number; filesChanged?: number },
 ): string {
   const riskEmoji: Record<string, string> = {
     critical: '🔴', high: '🟠', medium: '🟡', low: '🟢', clean: '✅',
@@ -722,6 +771,15 @@ export function formatInlineReviewBody(
 
   let md = marker + `# 🤖 PR Sentinel — Inline Code Review\n\n`;
   md += `## ${riskEmoji[review.overallRiskLevel] ?? '❓'} Overall Risk: **${review.overallRiskLevel.toUpperCase()}**\n\n`;
+
+  // Risk score visual block (0-100 + breakdown).
+  try {
+    const risk = calculateRiskScore(review, prSize);
+    md += formatRiskScoreBlock(risk);
+  } catch {
+    // Defensive — never let scoring break the post.
+  }
+
   md += `${review.summary}\n\n`;
   md += `📍 **${inlineCount}** finding${inlineCount === 1 ? '' : 's'} posted as inline comments below.`;
   if (leftover.length > 0) {

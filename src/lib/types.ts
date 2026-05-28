@@ -133,6 +133,10 @@ export interface PullRequestSummary {
  * lo usamos para anclar comentarios inline en el diff. `startLine` opcional para
  * findings multi-línea. `lineRange` queda como string libre para retro-compat con
  * markdown ("L42-L48").
+ *
+ * `replacementCode` es el reemplazo exacto para las líneas `startLine..lineNumber`
+ * cuando el fix es mecánico — lo usamos para renderizar `suggestion` blocks de
+ * GitHub (botón "Apply suggestion" / commit con un click).
  */
 export interface ReviewFinding {
   title: string;
@@ -147,6 +151,12 @@ export interface ReviewFinding {
   description: string;
   impact?: string;
   suggestion: string;
+  /**
+   * Reemplazo literal para las líneas referenciadas, sin markdown, sin
+   * comentarios extra. Cuando está presente, GitHub renderiza el comentario
+   * con un botón "Apply suggestion".
+   */
+  replacementCode?: string;
   cweId?: string;
 }
 

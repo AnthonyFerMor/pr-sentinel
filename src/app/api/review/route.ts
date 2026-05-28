@@ -88,6 +88,7 @@ export async function POST(request: NextRequest) {
           mode: reviewMode,
           reviewStyle,
           inlineMode: inlineMode ?? true,
+          userId: session?.user?.id,
         });
       } catch (error) {
         const msg =

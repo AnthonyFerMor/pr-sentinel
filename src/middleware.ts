@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 // Paths that do NOT require auth
 const PUBLIC_PREFIXES = [
   '/login',
+  '/demo',
   '/api/auth',
   '/api/webhooks',
   '/api/cron',
@@ -44,6 +45,6 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!login|api/auth|api/webhooks|api/cron|api/cache|_next|favicon\\.ico|robots\\.txt).*)',
+    '/((?!login|demo|api/auth|api/webhooks|api/cron|api/cache|_next|favicon\\.ico|robots\\.txt).*)',
   ],
 };
