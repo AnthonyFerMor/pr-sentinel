@@ -80,7 +80,7 @@ export const SKILLS: Skill[] = [
     name: 'Best Practices',
     description: 'Code smells, DRY violations, naming, TypeScript type safety.',
     icon: '🧹',
-    defaultEnabled: true,
+    defaultEnabled: false,
     promptFragment: `### 🔵 CODE QUALITY (Lower)
 - Code smells, functions >40 lines doing multiple things
 - DRY violations: duplicated logic that should be extracted
@@ -95,7 +95,7 @@ export const SKILLS: Skill[] = [
     name: 'Accessibility',
     description: 'ARIA, keyboard nav, semantic HTML, contrast, screen-reader support.',
     icon: '♿',
-    defaultEnabled: true,
+    defaultEnabled: false,
     promptFragment: `### ♿ ACCESSIBILITY (a11y)
 - Missing or incorrect ARIA roles/labels on interactive elements
 - Non-semantic HTML where semantic elements exist (div onClick instead of button)
@@ -115,7 +115,7 @@ export const SKILLS: Skill[] = [
     name: 'Testing',
     description: 'Missing coverage, untested edge cases, brittle or missing assertions.',
     icon: '🧪',
-    defaultEnabled: true,
+    defaultEnabled: false,
     promptFragment: `### 🧪 TESTING
 - New logic (especially branches, error paths, auth checks) added without corresponding tests
 - Edge cases left untested: empty input, null, boundary values, failure paths
