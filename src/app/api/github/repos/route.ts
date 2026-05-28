@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { listAccessibleRepositories } from '@/lib/github';
+import { auth } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 
 export async function GET() {
   try {
-    const repositories = await listAccessibleRepositories();
+    const session = await auth();
+    const repositories = await listAccessibleRepositories(session?.accessToken);
     return NextResponse.json({ repositories });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';

@@ -79,12 +79,12 @@ export class GeminiServiceError extends Error {
   }
 }
 
-function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
+function getClient(userApiKey?: string): GoogleGenAI {
+  const apiKey = userApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     throw new Error(
       'GEMINI_API_KEY is not configured. ' +
-        'Get your key at https://ai.google.dev and set it in .env.local'
+        'Get your key at https://ai.google.dev and set it in .env.local or in Settings.'
     );
   }
   return new GoogleGenAI({ apiKey });
@@ -260,8 +260,8 @@ function buildUserFacingGeminiError(
  * Cache verification: usageMetadata.cachedContentTokenCount > 0 = cache hit.
  * This is visible in logs and the UI dashboard.
  */
-async function ensureCache(modelName: string, skills: Skill[]): Promise<string> {
-  const client = getClient();
+async function ensureCache(modelName: string, skills: Skill[], userApiKey?: string): Promise<string> {
+  const client = getClient(userApiKey);
   const now = Date.now();
   const skillsKey = skillsCacheKey(skills);
   const cacheKey = `${modelName}::${skillsKey}`;
@@ -322,9 +322,11 @@ function getThinkingBudget(): number {
 async function buildGenerationConfig(
   modelName: string,
   skills: Skill[],
-  onStatus?: (message: string) => void
+  onStatus?: (message: string) => void,
+  userApiKey?: string,
+  thinkingBudgetOverride?: number,
 ): Promise<GeminiGenerationConfig> {
-  const thinkingBudget = getThinkingBudget();
+  const thinkingBudget = thinkingBudgetOverride ?? getThinkingBudget();
   const thinkingConfig = thinkingBudget > 0 ? { thinkingBudget } : undefined;
 
   if (!useExplicitCache()) {
@@ -337,7 +339,7 @@ async function buildGenerationConfig(
   }
 
   try {
-    const cacheName = await ensureCache(modelName, skills);
+    const cacheName = await ensureCache(modelName, skills, userApiKey);
     return {
       cachedContent: cacheName,
       responseMimeType: 'application/json',
@@ -365,9 +367,11 @@ async function createModelStream(
   modelName: string,
   userPrompt: string,
   skills: Skill[],
-  onStatus?: (message: string) => void
+  onStatus?: (message: string) => void,
+  userApiKey?: string,
+  thinkingBudgetOverride?: number,
 ): Promise<AsyncIterable<GeminiStreamChunk>> {
-  const config = await buildGenerationConfig(modelName, skills, onStatus);
+  const config = await buildGenerationConfig(modelName, skills, onStatus, userApiKey, thinkingBudgetOverride);
   const response = await client.models.generateContentStream({
     model: modelName,
     contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -381,7 +385,9 @@ async function* generateWithRetry(
   client: GoogleGenAI,
   userPrompt: string,
   skills: Skill[],
-  onStatus?: (message: string) => void
+  onStatus?: (message: string) => void,
+  userApiKey?: string,
+  thinkingBudgetOverride?: number,
 ): AsyncGenerator<{ chunk: GeminiStreamChunk; modelName: string }> {
   const candidates = getModelCandidates();
   const maxRetries = getMaxRetries();
@@ -396,7 +402,7 @@ async function* generateWithRetry(
       let yieldedFromAttempt = false;
 
       try {
-        const response = await createModelStream(client, modelName, userPrompt, skills, onStatus);
+        const response = await createModelStream(client, modelName, userPrompt, skills, onStatus, userApiKey, thinkingBudgetOverride);
 
         for await (const chunk of response) {
           yieldedFromAttempt = true;
@@ -464,6 +470,8 @@ export async function analyzeChunk(
     allFiles?: DiffFile[];
     focusAreas?: Hotspot[];
     previousReviewBody?: string;
+    userApiKey?: string;
+    thinkingBudgetOverride?: number;
   }
 ): Promise<{
   stream: AsyncIterable<{ text: string }>;
@@ -474,7 +482,7 @@ export async function analyzeChunk(
   }>;
   getModelUsed: () => string;
 }> {
-  const client = getClient();
+  const client = getClient(options?.userApiKey);
   const skills = options?.skills ?? resolveActiveSkills();
   const userPrompt = buildUserPrompt(metadata, files, chunkInfo, {
     includeCachePrimer: !useExplicitCache(),
@@ -491,7 +499,9 @@ export async function analyzeChunk(
       client,
       userPrompt,
       skills,
-      options?.onStatus
+      options?.onStatus,
+      options?.userApiKey,
+      options?.thinkingBudgetOverride,
     )) {
       modelUsed = modelName;
 
@@ -534,9 +544,10 @@ export async function analyzeChunk(
 export async function scoutHotspots(
   metadata: PRMetadata,
   files: DiffFile[],
-  skills?: Skill[]
+  skills?: Skill[],
+  userApiKey?: string,
 ): Promise<Hotspot[]> {
-  const client = getClient();
+  const client = getClient(userApiKey);
   const prompt = buildScoutPrompt(metadata, files, skills);
 
   for (const modelName of getModelCandidates()) {

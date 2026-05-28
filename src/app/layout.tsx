@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import Providers from '@/components/Providers';
 import './globals.css';
 
 export const viewport: Viewport = {
@@ -37,9 +38,11 @@ export default function RootLayout({
         <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-violet-600 focus:text-white focus:px-4 focus:py-2 focus:rounded-br-lg">
           Skip to main content
         </a>
-        <div id="main-content">
-          {children}
-        </div>
+        <Providers>
+          <div id="main-content">
+            {children}
+          </div>
+        </Providers>
       </body>
     </html>
   );

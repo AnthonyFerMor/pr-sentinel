@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parsePRUrl } from '@/lib/parser';
 import { postReviewComment } from '@/lib/github';
+import { auth } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,8 +15,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const session = await auth();
     const prInfo = parsePRUrl(prUrl);
-    const { commentUrl } = await postReviewComment(prInfo, reviewMarkdown);
+    const { commentUrl } = await postReviewComment(prInfo, reviewMarkdown, session?.accessToken);
 
     return NextResponse.json({ success: true, commentUrl });
   } catch (error) {

@@ -27,6 +27,8 @@ import { ReviewResult, StreamEvent, PRInfo } from './types';
 const TWO_PASS_ENABLED = process.env.TWO_PASS_ENABLED?.trim().toLowerCase() === 'true';
 const TWO_PASS_THRESHOLD = Number.parseInt(process.env.TWO_PASS_THRESHOLD ?? '12000', 10);
 
+export type ReviewMode = 'full' | 'lite';
+
 export interface RunReviewOptions {
   /** Skill ids a activar. Si se omite, usa los default. */
   skills?: string[];
@@ -44,6 +46,12 @@ export interface RunReviewOptions {
   skipIfReviewed?: boolean;
   /** Presupuesto de tiempo en ms para el análisis (deja margen al timeout serverless). */
   softDeadlineMs?: number;
+  /** Per-user Gemini API key (from encrypted cookie). Falls back to env var. */
+  geminiApiKey?: string;
+  /** Per-user GitHub token (from OAuth session). Falls back to env var. */
+  githubToken?: string;
+  /** Review mode: 'full' (default) or 'lite' (reduced token usage). */
+  mode?: ReviewMode;
 }
 
 export interface RunReviewOutcome {
@@ -141,16 +149,17 @@ async function publishReview(
   prInfo: PRInfo,
   review: ReviewResult,
   emit: (event: StreamEvent) => void,
-  updateExisting: boolean
+  updateExisting: boolean,
+  githubToken?: string,
 ): Promise<{ commentUrl?: string; commentError?: string }> {
   const markdown = formatReviewAsMarkdown(review);
 
   try {
     if (updateExisting) {
-      const existing = await findLatestReviewComment(prInfo);
+      const existing = await findLatestReviewComment(prInfo, githubToken);
       if (existing) {
         emit({ type: 'status', message: '✏️ Updating existing PR Sentinel comment...' });
-        const { commentUrl } = await updateReviewComment(prInfo, existing.commentId, markdown);
+        const { commentUrl } = await updateReviewComment(prInfo, existing.commentId, markdown, githubToken);
         review.metadata.commentUrl = commentUrl;
         emit({ type: 'status', message: `✅ Review updated: ${commentUrl}` });
         return { commentUrl };
@@ -158,7 +167,7 @@ async function publishReview(
     }
 
     emit({ type: 'status', message: '📝 Posting review to GitHub...' });
-    const { commentUrl } = await postReviewComment(prInfo, markdown);
+    const { commentUrl } = await postReviewComment(prInfo, markdown, githubToken);
     review.metadata.commentUrl = commentUrl;
     emit({ type: 'status', message: `✅ Review posted: ${commentUrl}` });
     return { commentUrl };
@@ -167,7 +176,7 @@ async function publishReview(
     review.metadata.commentError = msg;
     emit({
       type: 'error',
-      message: `GitHub comment failed, so the review was not marked complete. Check PR_SENTINEL_GITHUB_TOKEN permissions for ${prInfo.owner}/${prInfo.repo}. GitHub said: ${msg}`,
+      message: `GitHub comment failed. Check token permissions for ${prInfo.owner}/${prInfo.repo}. GitHub said: ${msg}`,
     });
     return { commentError: msg };
   }
@@ -185,7 +194,18 @@ export async function runReview(
   const startTime = Date.now();
   const emit = options.onEvent ?? (() => {});
   const updateExisting = options.updateExisting ?? false;
-  const activeSkills = resolveActiveSkills(options.skills);
+  const isLite = options.mode === 'lite';
+  const liteSkills = ['security', 'bugs'];
+  const activeSkills = isLite
+    ? resolveActiveSkills(liteSkills)
+    : resolveActiveSkills(options.skills);
+  const thinkingBudgetOverride = isLite ? 1024 : undefined;
+  const maxChunksOverride = isLite ? 2 : undefined;
+  const { geminiApiKey, githubToken } = options;
+
+  if (isLite) {
+    emit({ type: 'status', message: '⚡ Lite mode: reduced thinking budget, fewer chunks, security + bugs only.' });
+  }
 
   // 1. Parse URL
   emit({ type: 'status', message: '🔗 Parsing PR URL...' });
@@ -194,12 +214,12 @@ export async function runReview(
 
   // 2. Fetch metadata
   emit({ type: 'status', message: '📥 Fetching PR metadata...' });
-  const metadata = await fetchPRMetadata(prInfo);
+  const metadata = await fetchPRMetadata(prInfo, githubToken);
   emit({ type: 'metadata', data: metadata });
   emit({ type: 'status', message: `✅ "${metadata.title}" by ${metadata.author}` });
 
   // Fetch the previous review comment once — used for idempotency check AND context.
-  const previousComment = await findLatestReviewComment(prInfo);
+  const previousComment = await findLatestReviewComment(prInfo, githubToken);
 
   if (options.skipIfReviewed && previousComment?.marker.headSha === metadata.headSha) {
     emit({
@@ -213,7 +233,7 @@ export async function runReview(
 
   // 3. Fetch files
   emit({ type: 'status', message: '📂 Fetching changed files...' });
-  const files = await fetchPRFiles(prInfo);
+  const files = await fetchPRFiles(prInfo, githubToken);
   emit({
     type: 'status',
     message: `📂 ${files.length} files changed (+${metadata.additions}, -${metadata.deletions})`,
@@ -260,7 +280,7 @@ export async function runReview(
       },
     };
 
-    const published = await publishReview(prInfo, review, emit, updateExisting);
+    const published = await publishReview(prInfo, review, emit, updateExisting, githubToken);
     emit({ type: 'complete', data: review });
     return { review, skipped: false, ...published };
   }
@@ -272,10 +292,11 @@ export async function runReview(
   });
 
   // Optional first-pass scan: locate hotspots to focus the deep review.
+  // Skipped in lite mode to save tokens.
   let focusAreas: Hotspot[] = [];
-  if (TWO_PASS_ENABLED && processedDiff.totalTokensEstimate > TWO_PASS_THRESHOLD) {
+  if (!isLite && TWO_PASS_ENABLED && processedDiff.totalTokensEstimate > TWO_PASS_THRESHOLD) {
     emit({ type: 'status', message: '🔍 First-pass scan: locating hotspots...' });
-    focusAreas = await scoutHotspots(metadata, processedDiff.files, activeSkills);
+    focusAreas = await scoutHotspots(metadata, processedDiff.files, activeSkills, geminiApiKey);
     emit({
       type: 'status',
       message:
@@ -290,12 +311,16 @@ export async function runReview(
   let cacheInfo = { cacheHit: false, cachedTokens: 0, totalTokens: 0 };
   let merged: Omit<ReviewResult, 'metadata'> | null = null;
   let partial = false;
-  const plannedChunks = processedDiff.chunks.length;
+  // In lite mode, cap chunks to reduce token usage.
+  const effectiveChunks = maxChunksOverride
+    ? processedDiff.chunks.slice(0, maxChunksOverride)
+    : processedDiff.chunks;
+  const plannedChunks = effectiveChunks.length;
   const softDeadlineMs = options.softDeadlineMs ?? 55 * 1000;
   let processedChunks = 0;
   const modelsUsed = new Set<string>();
 
-  for (const chunk of processedDiff.chunks) {
+  for (const chunk of effectiveChunks) {
     if (Date.now() - startTime > softDeadlineMs) {
       partial = true;
       emit({
@@ -323,6 +348,8 @@ export async function runReview(
         allFiles: processedDiff.files,
         focusAreas,
         previousReviewBody,
+        userApiKey: geminiApiKey,
+        thinkingBudgetOverride,
       }
     );
 
@@ -386,7 +413,46 @@ export async function runReview(
   }
 
   // 7. Publish to GitHub (mandatory deliverable)
-  const published = await publishReview(prInfo, review, emit, updateExisting);
+  const published = await publishReview(prInfo, review, emit, updateExisting, githubToken);
+
+  // 8. Post re-verification summary when updating an existing review
+  if (updateExisting && published.commentUrl && previousReviewBody) {
+    try {
+      const totalFindings =
+        review.categories.security.length +
+        review.categories.bugs.length +
+        review.categories.performance.length +
+        review.categories.codeQuality.length +
+        review.categories.suggestions.length;
+
+      const critCount = review.categories.security.filter((f) => f.severity === 'critical').length +
+        review.categories.bugs.filter((f) => f.severity === 'critical').length;
+      const highCount = review.categories.security.filter((f) => f.severity === 'high').length +
+        review.categories.bugs.filter((f) => f.severity === 'high').length;
+
+      const severity = critCount > 0 ? `${critCount} critical` : highCount > 0 ? `${highCount} high` : 'none critical/high';
+
+      const summary = [
+        '## 🔄 Re-verification Summary\n',
+        `PR Sentinel re-analyzed this PR after new commits (head: \`${metadata.headSha.slice(0, 8)}\`). The main review comment above has been **updated** with the latest analysis.\n`,
+        `**Current findings**: ${totalFindings} total (${severity})`,
+        `- 🔒 Security: ${review.categories.security.length}`,
+        `- 🐛 Bugs: ${review.categories.bugs.length}`,
+        `- ⚡ Performance: ${review.categories.performance.length}`,
+        `- 🧹 Code quality: ${review.categories.codeQuality.length}`,
+        `- 💡 Suggestions: ${review.categories.suggestions.length}`,
+        '',
+        '---\n*🤖 PR Sentinel — automated re-verification*',
+      ].join('\n');
+
+      await postReviewComment(prInfo, summary, githubToken);
+      emit({ type: 'status', message: '📊 Re-verification summary posted.' });
+    } catch (err) {
+      // Non-fatal: the main review was already posted/updated successfully.
+      console.error('[run-review] Failed to post re-verification summary:', err);
+    }
+  }
+
   emit({ type: 'complete', data: review });
 
   return { review, skipped: false, ...published };

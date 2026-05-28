@@ -5,14 +5,20 @@
 // ============================================================
 
 import { NextRequest } from 'next/server';
-import { runReview } from '@/lib/run-review';
+import { runReview, ReviewMode } from '@/lib/run-review';
 import { GeminiServiceError } from '@/lib/gemini';
 import { StreamEvent } from '@/lib/types';
+import { auth } from '@/lib/auth';
+import { getUserKeys } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  // Read user session + keys
+  const session = await auth();
+  const userKeys = await getUserKeys();
+
   let body: unknown;
   try {
     body = await request.json();
@@ -23,9 +29,10 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const { prUrl, skills: skillIds } = (body ?? {}) as {
+  const { prUrl, skills: skillIds, mode } = (body ?? {}) as {
     prUrl?: unknown;
     skills?: unknown;
+    mode?: unknown;
   };
 
   if (!prUrl || typeof prUrl !== 'string') {
@@ -39,6 +46,13 @@ export async function POST(request: NextRequest) {
     ? skillIds.filter((id): id is string => typeof id === 'string')
     : undefined;
 
+  const reviewMode: ReviewMode =
+    mode === 'lite' ? 'lite' : 'full';
+
+  // Per-user credentials: OAuth token for GitHub, encrypted cookie for Gemini
+  const githubToken = session?.accessToken;
+  const geminiApiKey = userKeys.geminiApiKey;
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -51,6 +65,9 @@ export async function POST(request: NextRequest) {
           skills: requestedSkillIds,
           onEvent: send,
           softDeadlineMs: (maxDuration - 5) * 1000,
+          geminiApiKey,
+          githubToken,
+          mode: reviewMode,
         });
       } catch (error) {
         const msg =

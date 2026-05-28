@@ -34,15 +34,15 @@ async function withConcurrencyLimit<T>(
   return results;
 }
 
-function getOctokit(): Octokit {
-  const token = process.env.PR_SENTINEL_GITHUB_TOKEN?.trim();
+function getOctokit(userToken?: string): Octokit {
+  const token = userToken?.trim() || process.env.PR_SENTINEL_GITHUB_TOKEN?.trim();
   if (!token) {
     throw new Error(
       'PR_SENTINEL_GITHUB_TOKEN is not configured. ' +
-      'Set it in .env.local or Vercel Environment Variables.'
+      'Sign in with GitHub or set it in .env.local / Vercel Environment Variables.'
     );
   }
-  return new Octokit({ 
+  return new Octokit({
     auth: token,
     request: {
       fetch: (url: string, opts: RequestInit) => {
@@ -55,8 +55,8 @@ function getOctokit(): Octokit {
 /**
  * Obtiene la metadata de un Pull Request.
  */
-export async function fetchPRMetadata(pr: PRInfo): Promise<PRMetadata> {
-  const octokit = getOctokit();
+export async function fetchPRMetadata(pr: PRInfo, githubToken?: string): Promise<PRMetadata> {
+  const octokit = getOctokit(githubToken);
 
   const { data } = await octokit.rest.pulls.get({
     owner: pr.owner,
@@ -84,8 +84,8 @@ export async function fetchPRMetadata(pr: PRInfo): Promise<PRMetadata> {
  * Obtiene los archivos cambiados en un PR con sus diffs (patches).
  * Usa paginación automática para obtener TODOS los archivos.
  */
-export async function fetchPRFiles(pr: PRInfo): Promise<DiffFile[]> {
-  const octokit = getOctokit();
+export async function fetchPRFiles(pr: PRInfo, githubToken?: string): Promise<DiffFile[]> {
+  const octokit = getOctokit(githubToken);
 
   const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
     owner: pr.owner,
@@ -118,9 +118,10 @@ export async function fetchPRFiles(pr: PRInfo): Promise<DiffFile[]> {
  */
 export async function postReviewComment(
   pr: PRInfo,
-  reviewMarkdown: string
+  reviewMarkdown: string,
+  githubToken?: string,
 ): Promise<{ commentUrl: string }> {
-  const octokit = getOctokit();
+  const octokit = getOctokit(githubToken);
 
   const { data } = await octokit.rest.issues.createComment({
     owner: pr.owner,
@@ -138,9 +139,10 @@ export async function postReviewComment(
  * revisión, actualizamos el existente para no llenar el PR de ruido.
  */
 export async function findLatestReviewComment(
-  pr: PRInfo
+  pr: PRInfo,
+  githubToken?: string,
 ): Promise<{ commentId: number; htmlUrl: string; body: string; marker: ReviewMarker } | null> {
-  const octokit = getOctokit();
+  const octokit = getOctokit(githubToken);
 
   const comments = await octokit.paginate(octokit.rest.issues.listComments, {
     owner: pr.owner,
@@ -166,9 +168,10 @@ export async function findLatestReviewComment(
 export async function updateReviewComment(
   pr: PRInfo,
   commentId: number,
-  reviewMarkdown: string
+  reviewMarkdown: string,
+  githubToken?: string,
 ): Promise<{ commentUrl: string }> {
-  const octokit = getOctokit();
+  const octokit = getOctokit(githubToken);
 
   const { data } = await octokit.rest.issues.updateComment({
     owner: pr.owner,
@@ -180,8 +183,8 @@ export async function updateReviewComment(
   return { commentUrl: data.html_url };
 }
 
-export async function listAccessibleRepositories(): Promise<RepositorySummary[]> {
-  const octokit = getOctokit();
+export async function listAccessibleRepositories(githubToken?: string): Promise<RepositorySummary[]> {
+  const octokit = getOctokit(githubToken);
 
   const repos = await octokit.paginate(octokit.rest.repos.listForAuthenticatedUser, {
     affiliation: 'owner,collaborator,organization_member',
@@ -204,9 +207,10 @@ export async function listAccessibleRepositories(): Promise<RepositorySummary[]>
 
 export async function listOpenPullRequests(
   owner: string,
-  repo: string
+  repo: string,
+  githubToken?: string,
 ): Promise<PullRequestSummary[]> {
-  const octokit = getOctokit();
+  const octokit = getOctokit(githubToken);
 
   const pulls = await octokit.paginate(octokit.rest.pulls.list, {
     owner,

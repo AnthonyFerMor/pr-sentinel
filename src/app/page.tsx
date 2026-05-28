@@ -24,20 +24,31 @@ export default function Home() {
   const resultsRef = useRef<HTMLDivElement>(null);
   const lastPrUrl = useRef<string>('');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [reviewMode, setReviewMode] = useState<'full' | 'lite'>('full');
 
   // Cargar selección guardada en el cliente (evita mismatch de hidratación).
   useEffect(() => {
     setSelectedSkills(loadStoredSkills());
+    const storedMode = typeof window !== 'undefined'
+      ? (localStorage.getItem('pr-sentinel:mode') as 'full' | 'lite') || 'full'
+      : 'full';
+    setReviewMode(storedMode);
   }, []);
 
   const handleSubmit = async (prUrl: string) => {
     lastPrUrl.current = prUrl;
-    await startReview(prUrl, selectedSkills);
+    await startReview(prUrl, selectedSkills, reviewMode);
+  };
+
+  const toggleMode = () => {
+    const next = reviewMode === 'full' ? 'lite' : 'full';
+    setReviewMode(next);
+    try { localStorage.setItem('pr-sentinel:mode', next); } catch {}
   };
 
   const handleRetry = () => {
     if (lastPrUrl.current) {
-      handleSubmit(lastPrUrl.current);
+      void handleSubmit(lastPrUrl.current);
     }
   };
 
@@ -69,6 +80,28 @@ export default function Home() {
             isLoading={isLoading}
             onReset={reset}
           />
+
+          {/* Mode toggle */}
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={toggleMode}
+              disabled={isLoading}
+              className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-medium transition disabled:opacity-50 ${
+                reviewMode === 'lite'
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                  : 'border-violet-500/40 bg-violet-500/10 text-violet-300'
+              }`}
+            >
+              {reviewMode === 'lite' ? '⚡' : '🔬'}
+              {reviewMode === 'lite' ? 'Lite mode' : 'Full mode'}
+            </button>
+            <span className="text-xs text-gray-500">
+              {reviewMode === 'lite'
+                ? 'Faster, lower token usage. Security + bugs only.'
+                : 'All skills, deep analysis with thinking.'}
+            </span>
+          </div>
 
           <SkillSelector
             selected={selectedSkills}

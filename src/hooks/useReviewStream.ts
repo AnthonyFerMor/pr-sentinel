@@ -7,7 +7,7 @@ import { useState, useCallback, useRef } from 'react';
 import { StreamEvent, ReviewResult, PRMetadata } from '@/lib/types';
 
 export interface UseReviewStreamReturn {
-  startReview: (prUrl: string, skills?: string[]) => Promise<void>;
+  startReview: (prUrl: string, skills?: string[], mode?: 'full' | 'lite') => Promise<void>;
   isLoading: boolean;
   startedAt: number | null;
   statusMessages: string[];
@@ -44,7 +44,7 @@ export function useReviewStream(): UseReviewStreamReturn {
     setError(null);
   }, []);
 
-  const startReview = useCallback(async (prUrl: string, skills?: string[]) => {
+  const startReview = useCallback(async (prUrl: string, skills?: string[], mode?: 'full' | 'lite') => {
     abortRef.current?.abort();
     setIsLoading(true);
     setStartedAt(Date.now());
@@ -62,7 +62,11 @@ export function useReviewStream(): UseReviewStreamReturn {
       const response = await fetch('/api/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(skills ? { prUrl, skills } : { prUrl }),
+        body: JSON.stringify({
+          prUrl,
+          ...(skills ? { skills } : {}),
+          ...(mode ? { mode } : {}),
+        }),
         signal: abortController.signal,
       });
 

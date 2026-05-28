@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listOpenPullRequests } from '@/lib/github';
 import { parseRepoUrl } from '@/lib/parser';
+import { auth } from '@/lib/auth';
 
 export const runtime = 'nodejs';
 
@@ -23,7 +24,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const pullRequests = await listOpenPullRequests(repoInfo.owner, repoInfo.repo);
+    const session = await auth();
+    const pullRequests = await listOpenPullRequests(repoInfo.owner, repoInfo.repo, session?.accessToken);
     return NextResponse.json({ pullRequests });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
