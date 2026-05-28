@@ -3,8 +3,8 @@
  * No Next.js imports, no auth middleware.
  * Run: node --import ./node_modules/tsx/dist/esm/index.cjs --env-file=.env.local scripts/run-reviews.mts
  */
-import { runReview } from '../src/lib/run-review.ts';
-import type { StreamEvent } from '../src/lib/types.ts';
+import { runReview } from '../src/lib/run-review';
+import type { StreamEvent } from '../src/lib/types';
 
 const PR_URLS = [
   'https://github.com/iqsource/hackathon-2026-05-notesy/pull/1',

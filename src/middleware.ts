@@ -26,8 +26,10 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // NextAuth v5 stores the session token in a secure cookie
+  // NextAuth v5 stores the session token in a secure cookie prefixed with authjs
   const sessionToken =
+    request.cookies.get('authjs.session-token')?.value ||
+    request.cookies.get('__Secure-authjs.session-token')?.value ||
     request.cookies.get('next-auth.session-token')?.value ||
     request.cookies.get('__Secure-next-auth.session-token')?.value;
 

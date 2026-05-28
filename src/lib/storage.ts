@@ -74,9 +74,11 @@ let derivedKey: Buffer | null = null;
 
 function getEncryptionKey(): Buffer {
   if (derivedKey) return derivedKey;
-  const secret = process.env.NEXTAUTH_SECRET;
+  // NextAuth v5 uses AUTH_SECRET; v4 used NEXTAUTH_SECRET. Accept either so
+  // the same encryption key works regardless of which env var the deployment sets.
+  const secret = process.env.NEXTAUTH_SECRET || process.env.AUTH_SECRET;
   if (!secret || secret.length < 16) {
-    throw new Error('NEXTAUTH_SECRET must be set (>= 16 chars) to encrypt user secrets.');
+    throw new Error('NEXTAUTH_SECRET or AUTH_SECRET must be set (>= 16 chars) to encrypt user secrets.');
   }
   derivedKey = scryptSync(secret, SCRYPT_SALT, 32);
   return derivedKey;

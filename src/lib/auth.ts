@@ -25,11 +25,18 @@ declare module '@auth/core/jwt' {
   }
 }
 
+// Debug: log which auth env vars are present at startup (values masked).
+if (typeof process !== 'undefined') {
+  const vars = ['AUTH_SECRET', 'NEXTAUTH_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'AUTH_GITHUB_ID', 'AUTH_GITHUB_SECRET', 'NEXTAUTH_URL'];
+  console.log('[auth] env check:', vars.map(v => `${v}=${process.env[v] ? '✓' : '✗'}`).join(', '));
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  trustHost: true,
   providers: [
     GitHub({
-      clientId: process.env.GITHUB_CLIENT_ID,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET,
+      clientId: process.env.GITHUB_CLIENT_ID ?? process.env.AUTH_GITHUB_ID,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET ?? process.env.AUTH_GITHUB_SECRET,
       authorization: {
         params: {
           // Scopes needed: read repos, read/write PRs and issues (for posting comments)
@@ -41,7 +48,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: 'jwt' },
   pages: {
     signIn: '/login',
+    error: '/login',
   },
+  debug: process.env.NODE_ENV === 'development',
   callbacks: {
     authorized({ auth: session, request }) {
       const isLoggedIn = !!session?.user;
