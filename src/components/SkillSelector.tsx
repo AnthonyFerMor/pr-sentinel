@@ -10,20 +10,20 @@ const STORAGE_KEY = 'pr-sentinel:skills';
  * default del catálogo. Exportado para que otras vistas reusen la selección.
  */
 export function loadStoredSkills(): string[] {
-  if (typeof window === 'undefined') {
-    return resolveActiveSkills().map((skill) => skill.id);
-  }
+  const defaults = resolveActiveSkills().map((skill) => skill.id);
+  if (typeof window === 'undefined') return defaults;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return resolveActiveSkills().map((skill) => skill.id);
+    if (!raw) return defaults;
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')) {
+    // Reject empty arrays — fall back to defaults so user always starts with skills active.
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((id) => typeof id === 'string')) {
       return parsed;
     }
   } catch {
     // ignore malformed storage
   }
-  return resolveActiveSkills().map((skill) => skill.id);
+  return defaults;
 }
 
 function storeSkills(ids: string[]) {
@@ -41,7 +41,7 @@ interface SkillSelectorProps {
 }
 
 export default function SkillSelector({ selected, onChange, disabled }: SkillSelectorProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true); // Open by default — skills are part of the core UX.
   const selectedSet = new Set(selected);
 
   // Persistir cada cambio de selección.
@@ -56,7 +56,11 @@ export default function SkillSelector({ selected, onChange, disabled }: SkillSel
     onChange(SKILLS.filter((skill) => next.has(skill.id)).map((skill) => skill.id));
   };
 
+  const enableAll = () => onChange(SKILLS.map((s) => s.id));
+  const disableAll = () => onChange([]);
+
   const activeCount = selectedSet.size;
+  const totalCount = SKILLS.length;
 
   return (
     <div className="mt-4 rounded-xl border border-white/10 bg-gray-900/60">
@@ -69,15 +73,45 @@ export default function SkillSelector({ selected, onChange, disabled }: SkillSel
         <span className="flex items-center gap-2 text-sm font-medium text-gray-200">
           <span className="text-violet-400">🧩</span>
           Review skills
-          <span className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-xs text-violet-300">
-            {activeCount} active
+          <span className={`rounded-full border px-2 py-0.5 text-xs ${
+            activeCount === totalCount
+              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+              : activeCount === 0
+                ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                : 'border-violet-500/30 bg-violet-500/10 text-violet-300'
+          }`}>
+            {activeCount}/{totalCount} active
           </span>
         </span>
         <span className="text-gray-500">{open ? '▲' : '▼'}</span>
       </button>
 
       {open && (
-        <div className="grid gap-2 border-t border-white/5 p-3 sm:grid-cols-2">
+        <div className="border-t border-white/5">
+          <div className="flex items-center justify-between px-3 pt-3">
+            <p className="text-xs text-gray-500">Pick what PR Sentinel should look for.</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={enableAll}
+                disabled={disabled || activeCount === totalCount}
+                className="text-xs text-violet-400 hover:text-violet-300 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Enable all
+              </button>
+              <span className="text-gray-700">·</span>
+              <button
+                type="button"
+                onClick={disableAll}
+                disabled={disabled || activeCount === 0}
+                className="text-xs text-gray-400 hover:text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Disable all
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-2 p-3 sm:grid-cols-2">
           {SKILLS.map((skill) => {
             const isOn = selectedSet.has(skill.id);
             return (
@@ -115,6 +149,7 @@ export default function SkillSelector({ selected, onChange, disabled }: SkillSel
               </button>
             );
           })}
+          </div>
         </div>
       )}
     </div>
