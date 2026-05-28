@@ -1,8 +1,12 @@
 // ============================================================
 // /api/webhooks/github — Listener de eventos de GitHub
 // ------------------------------------------------------------
-// Recibe pull_request events (opened / reopened / synchronize),
-// verifica la firma HMAC y dispara runReview en background con
+// Handles:
+//   - pull_request (opened/reopened/synchronize/ready_for_review)
+//   - issue_comment (replies to PR Sentinel on PRs)
+//   - pull_request_review_comment (inline review comment replies)
+//
+// Verifica la firma HMAC y dispara el trabajo en background con
 // after(), respondiendo 202 de inmediato para no agotar el
 // timeout de entrega de webhooks de GitHub.
 // ============================================================
@@ -10,6 +14,8 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runReview } from '@/lib/run-review';
+import { handleCommentEvent } from '@/lib/conversational';
+import { parsePRUrl } from '@/lib/parser';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -22,46 +28,48 @@ function verifySignature(rawBody: string, signatureHeader: string | null, secret
   const expected = 'sha256=' + createHmac('sha256', secret).update(rawBody).digest('hex');
   const a = Buffer.from(expected);
   const b = Buffer.from(signatureHeader);
-  // timingSafeEqual lanza si difieren en longitud → comparamos largo primero.
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function POST(request: NextRequest) {
-  const secret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
-  if (!secret) {
-    return NextResponse.json(
-      { error: 'GITHUB_WEBHOOK_SECRET is not configured.' },
-      { status: 500 }
-    );
-  }
+// ── Payload types for each event ─────────────────────────────
 
-  // Necesitamos el body crudo para verificar la firma; parseamos después.
-  const rawBody = await request.text();
-  const signature = request.headers.get('x-hub-signature-256');
+interface PullRequestPayload {
+  action?: string;
+  pull_request?: { html_url?: string; draft?: boolean; number?: number; title?: string };
+  repository?: { full_name?: string };
+}
 
-  if (!verifySignature(rawBody, signature, secret)) {
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
-  }
-
-  const event = request.headers.get('x-github-event');
-  if (event === 'ping') {
-    return NextResponse.json({ ok: true, pong: true });
-  }
-  if (event !== 'pull_request') {
-    return NextResponse.json({ ok: true, ignored: `event '${event}'` });
-  }
-
-  let payload: {
-    action?: string;
-    pull_request?: { html_url?: string; draft?: boolean; number?: number };
-    repository?: { full_name?: string };
+interface IssueCommentPayload {
+  action?: string;
+  issue?: {
+    number?: number;
+    pull_request?: { html_url?: string };
   };
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
-  }
+  comment?: {
+    id?: number;
+    body?: string;
+    user?: { login?: string };
+    html_url?: string;
+  };
+  repository?: { full_name?: string };
+}
 
+interface ReviewCommentPayload {
+  action?: string;
+  pull_request?: { html_url?: string; number?: number; title?: string };
+  comment?: {
+    id?: number;
+    body?: string;
+    user?: { login?: string };
+    html_url?: string;
+    in_reply_to_id?: number;
+  };
+  repository?: { full_name?: string };
+}
+
+// ── Handlers ─────────────────────────────────────────────────
+
+function handlePullRequest(payload: PullRequestPayload) {
   const action = payload.action ?? '';
   const prUrl = payload.pull_request?.html_url;
 
@@ -72,7 +80,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, ignored: 'draft PR' });
   }
 
-  // Dispara el review en background y responde 202 de inmediato.
   after(async () => {
     try {
       const outcome = await runReview(prUrl, {
@@ -91,4 +98,148 @@ export async function POST(request: NextRequest) {
   });
 
   return NextResponse.json({ ok: true, queued: prUrl }, { status: 202 });
+}
+
+function handleIssueComment(payload: IssueCommentPayload) {
+  // Only handle newly created comments, not edits or deletes.
+  if (payload.action !== 'created') {
+    return NextResponse.json({ ok: true, ignored: `comment action '${payload.action}'` });
+  }
+
+  // issue_comment fires for issues AND PRs. Confirm it's a PR.
+  const prHtmlUrl = payload.issue?.pull_request?.html_url;
+  if (!prHtmlUrl) {
+    return NextResponse.json({ ok: true, ignored: 'not a PR comment' });
+  }
+
+  const comment = payload.comment;
+  if (!comment?.body || !comment.id || !comment.user?.login) {
+    return NextResponse.json({ ok: true, ignored: 'incomplete comment payload' });
+  }
+
+  let prInfo;
+  try {
+    prInfo = parsePRUrl(prHtmlUrl);
+  } catch {
+    return NextResponse.json({ ok: true, ignored: 'could not parse PR URL from issue_comment' });
+  }
+
+  after(async () => {
+    try {
+      const result = await handleCommentEvent(
+        prInfo,
+        {
+          id: comment.id!,
+          body: comment.body!,
+          author: comment.user!.login!,
+          htmlUrl: comment.html_url ?? '',
+        },
+        `PR #${prInfo.pullNumber}`,
+      );
+
+      if (!result) {
+        console.log(`[webhook] comment on ${payload.repository?.full_name}#${prInfo.pullNumber} — not addressed to PR Sentinel, ignored.`);
+      } else if (result.replied) {
+        console.log(`[webhook] replied to @${comment.user!.login} on ${payload.repository?.full_name}#${prInfo.pullNumber}: ${result.commentUrl}`);
+      } else {
+        console.log(`[webhook] comment addressed to PR Sentinel but empty question, skipped.`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      console.error(`[webhook] conversational reply failed: ${msg}`);
+    }
+  });
+
+  return NextResponse.json({ ok: true, queued: 'comment_reply' }, { status: 202 });
+}
+
+function handleReviewComment(payload: ReviewCommentPayload) {
+  if (payload.action !== 'created') {
+    return NextResponse.json({ ok: true, ignored: `review_comment action '${payload.action}'` });
+  }
+
+  const prUrl = payload.pull_request?.html_url;
+  const comment = payload.comment;
+  if (!prUrl || !comment?.body || !comment.id || !comment.user?.login) {
+    return NextResponse.json({ ok: true, ignored: 'incomplete review comment payload' });
+  }
+
+  let prInfo;
+  try {
+    prInfo = parsePRUrl(prUrl);
+  } catch {
+    return NextResponse.json({ ok: true, ignored: 'could not parse PR URL from review_comment' });
+  }
+
+  after(async () => {
+    try {
+      const result = await handleCommentEvent(
+        prInfo,
+        {
+          id: comment.id!,
+          body: comment.body!,
+          author: comment.user!.login!,
+          htmlUrl: comment.html_url ?? '',
+          inReplyToId: comment.in_reply_to_id,
+        },
+        payload.pull_request?.title ?? `PR #${prInfo.pullNumber}`,
+      );
+
+      if (!result) {
+        console.log(`[webhook] inline review comment on ${payload.repository?.full_name}#${prInfo.pullNumber} — not addressed, ignored.`);
+      } else if (result.replied) {
+        console.log(`[webhook] replied to inline comment by @${comment.user!.login}: ${result.commentUrl}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      console.error(`[webhook] inline review reply failed: ${msg}`);
+    }
+  });
+
+  return NextResponse.json({ ok: true, queued: 'review_comment_reply' }, { status: 202 });
+}
+
+// ── Main POST handler ────────────────────────────────────────
+
+export async function POST(request: NextRequest) {
+  const secret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
+  if (!secret) {
+    return NextResponse.json(
+      { error: 'GITHUB_WEBHOOK_SECRET is not configured.' },
+      { status: 500 }
+    );
+  }
+
+  const rawBody = await request.text();
+  const signature = request.headers.get('x-hub-signature-256');
+
+  if (!verifySignature(rawBody, signature, secret)) {
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+  }
+
+  const event = request.headers.get('x-github-event');
+  if (event === 'ping') {
+    return NextResponse.json({ ok: true, pong: true });
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
+  }
+
+  switch (event) {
+    case 'pull_request':
+      return handlePullRequest(payload as PullRequestPayload);
+
+    case 'issue_comment':
+      return handleIssueComment(payload as IssueCommentPayload);
+
+    case 'pull_request_review_comment':
+      return handleReviewComment(payload as ReviewCommentPayload);
+
+    default:
+      return NextResponse.json({ ok: true, ignored: `event '${event}'` });
+  }
 }
