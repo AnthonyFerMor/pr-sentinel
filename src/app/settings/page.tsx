@@ -48,6 +48,11 @@ export default function SettingsPage() {
   const [savingStyle, setSavingStyle] = useState(false);
   const [styleMessage, setStyleMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Inline mode: inline review comments per line (default) vs. single bottom comment.
+  const [inlineMode, setInlineMode] = useState<boolean>(true);
+  const [savingInline, setSavingInline] = useState(false);
+  const [inlineMessage, setInlineMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.push('/login');
@@ -64,6 +69,9 @@ export default function SettingsPage() {
         if (typeof data.storageAvailable === 'boolean') setStorageAvailable(data.storageAvailable);
         if (data.reviewStyle === 'full' || data.reviewStyle === 'lite' || data.reviewStyle === 'caveman') {
           setReviewStyle(data.reviewStyle);
+        }
+        if (typeof data.inlineMode === 'boolean') {
+          setInlineMode(data.inlineMode);
         }
       })
       .catch(() => {});
@@ -159,6 +167,33 @@ export default function SettingsPage() {
       setStyleMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
     } finally {
       setSavingStyle(false);
+    }
+  };
+
+  const handleSaveInlineMode = async (next: boolean) => {
+    setSavingInline(true);
+    setInlineMessage(null);
+    const prev = inlineMode;
+    setInlineMode(next); // optimistic
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineMode: next }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to save');
+      setInlineMessage({
+        type: 'success',
+        text: next
+          ? 'Inline comments enabled. Each finding will appear next to its line on the PR diff.'
+          : 'Inline comments disabled. Reviews will post as a single bottom-of-PR comment.',
+      });
+    } catch (err) {
+      setInlineMode(prev); // revert on error
+      setInlineMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
+    } finally {
+      setSavingInline(false);
     }
   };
 
@@ -483,6 +518,96 @@ export default function SettingsPage() {
                 }`}>
                   <span aria-hidden="true">{patMessage.type === 'success' ? '✓' : '⚠'}</span>
                   <span>{patMessage.text}</span>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Inline comments toggle — anchor findings to specific diff lines */}
+          <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+                <span className="text-violet-400">💬</span>
+                Comment Placement
+              </h3>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/20">
+                <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
+                <span className="text-xs text-violet-300 font-medium">{inlineMode ? 'Inline' : 'Single comment'}</span>
+              </span>
+            </div>
+
+            <div className="p-6">
+              <p className="text-sm text-gray-400 mb-4 leading-relaxed">
+                Where PR Sentinel attaches its findings. Inline mode posts each finding as a comment
+                next to the exact line in the &quot;Files changed&quot; view — much faster to act on. Single
+                comment mode posts everything at the bottom of the PR (legacy behavior).
+              </p>
+
+              <div className="grid sm:grid-cols-2 gap-2">
+                {([
+                  {
+                    id: true,
+                    label: 'Inline comments',
+                    icon: '🎯',
+                    desc: 'One review with each finding anchored to its line in the diff. Recommended.',
+                    pill: 'Recommended',
+                  },
+                  {
+                    id: false,
+                    label: 'Single bottom comment',
+                    icon: '📜',
+                    desc: 'All findings collected into one comment at the bottom of the PR.',
+                  },
+                ] as const).map((opt) => {
+                  const active = inlineMode === opt.id;
+                  return (
+                    <button
+                      key={String(opt.id)}
+                      type="button"
+                      onClick={() => !savingInline && opt.id !== inlineMode && handleSaveInlineMode(opt.id)}
+                      disabled={savingInline}
+                      className={`text-left flex items-start gap-3 p-3 rounded-xl border transition disabled:opacity-50 ${
+                        active
+                          ? 'border-violet-500/50 bg-violet-500/10'
+                          : 'border-white/10 bg-gray-950/40 hover:border-white/20 hover:bg-gray-900/60'
+                      }`}
+                    >
+                      <span className="text-xl mt-0.5" aria-hidden="true">{opt.icon}</span>
+                      <span className="flex-1 min-w-0">
+                        <span className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-sm font-semibold ${active ? 'text-violet-200' : 'text-gray-200'}`}>
+                            {opt.label}
+                          </span>
+                          {'pill' in opt && opt.pill && (
+                            <span className="text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-full px-2 py-0.5 uppercase tracking-wider">
+                              {opt.pill}
+                            </span>
+                          )}
+                          {active && (
+                            <span className="text-[10px] text-violet-300 bg-violet-500/15 border border-violet-500/30 rounded-full px-2 py-0.5 uppercase tracking-wider">
+                              Active
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-xs text-gray-400 mt-0.5 leading-relaxed">{opt.desc}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-white/5 bg-gray-950/40 p-3 text-xs text-gray-400 leading-relaxed">
+                <span className="font-semibold text-gray-300">Note:</span> Inline mode only applies
+                to first-time reviews. When PR Sentinel re-reviews a PR after new commits, it edits
+                the existing single comment (GitHub doesn&apos;t allow editing inline reviews).
+              </div>
+
+              {inlineMessage && (
+                <div className={`mt-3 flex items-start gap-2 text-sm ${
+                  inlineMessage.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  <span aria-hidden="true">{inlineMessage.type === 'success' ? '✓' : '⚠'}</span>
+                  <span>{inlineMessage.text}</span>
                 </div>
               )}
             </div>

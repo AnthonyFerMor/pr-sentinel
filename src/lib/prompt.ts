@@ -327,7 +327,11 @@ Each diff line is prefixed with \`<lineNumber>|<marker>\`:
 - space (context) — unchanged line, exists in current code.
 - \`|\` with no number prefix — hunk header, not real code.
 
-When you report a finding, set lineRange to the real line numbers of \`+\` or context lines (e.g. "L42" or "L42-L48").
+When you report a finding:
+- Set \`lineNumber\` (REQUIRED, integer) to the real new-file line number from the prefix — the line you want to anchor the inline review comment on. It MUST be an \`+\` or context line shown in the diff. For multi-line findings, use the LAST line.
+- Optionally set \`startLine\` for multi-line findings (must be < lineNumber, also from the diff).
+- Set \`lineRange\` as a display string (e.g. "L42" or "L42-L48") matching the numbers above.
+- NEVER invent a line number. NEVER pick a number that doesn't appear in the diff. NEVER use a number from a \`-\` (deleted) line.
 
 ## ANALYSIS INSTRUCTIONS
 Use your thinking to deeply analyze the code before producing findings. For each file:
@@ -451,13 +455,27 @@ function getFindingSchema() {
       title: { type: Type.STRING, description: 'Short descriptive title of the finding' },
       severity: { type: Type.STRING, enum: ['critical', 'high', 'medium', 'low', 'info'] },
       file: { type: Type.STRING, description: 'File path where the issue was found' },
-      lineRange: { type: Type.STRING, description: 'Line range, e.g. "L15-L23"' },
+      lineNumber: {
+        type: Type.INTEGER,
+        description:
+          'REQUIRED. Real new-file line number where the finding is anchored. ' +
+          'Use the EXACT number shown to the left of the `+` or context line in the annotated diff. ' +
+          'This MUST be a line that appears in the diff (added or context line). ' +
+          'For multi-line findings, this is the LAST line of the range.',
+      },
+      startLine: {
+        type: Type.INTEGER,
+        description:
+          'Optional. First line of the range for multi-line findings. ' +
+          'Must be < lineNumber. Omit for single-line findings.',
+      },
+      lineRange: { type: Type.STRING, description: 'Display string for the line range, e.g. "L15-L23" or "L42". Should match lineNumber/startLine.' },
       description: { type: Type.STRING, description: 'Detailed explanation: what the bug is, the data flow from source to sink, and why it is dangerous' },
       impact: { type: Type.STRING, description: 'What happens if this issue is exploited or triggered in production — concrete scenario, not generic risk' },
       suggestion: { type: Type.STRING, description: 'Concrete fix with actual code showing exactly what to change. Include before/after when possible.' },
       cweId: { type: Type.STRING, description: 'CWE ID for security issues, e.g. "CWE-89" for SQL injection, "CWE-79" for XSS' },
     },
-    required: ['title', 'severity', 'file', 'description', 'impact', 'suggestion'],
+    required: ['title', 'severity', 'file', 'lineNumber', 'description', 'impact', 'suggestion'],
   };
 }
 
@@ -625,4 +643,130 @@ export function formatReview(review: ReviewResult, style?: 'full' | 'lite' | 'ca
   if (style === 'caveman') return formatReviewAsCaveman(review);
   // 'lite' currently uses same markdown but with fewer skills active (handled upstream).
   return formatReviewAsMarkdown(review);
+}
+
+// ──────────────────────────────────────────────────────────────
+// Inline-mode formatters
+//
+// En modo inline, separamos el review en dos partes:
+//   1. Cuerpo principal del review (summary + metadata + leftover findings
+//      que no caen sobre líneas válidas del diff).
+//   2. Comentarios inline (un comentario por finding válido, anclado a la
+//      línea del diff).
+//
+// Si no hay leftover y no hay inline (review limpio), el cuerpo sigue
+// llevando el resumen y la metadata para que la nota se vea bien aún en PRs
+// sin findings.
+// ──────────────────────────────────────────────────────────────
+
+const SEVERITY_EMOJI: Record<string, string> = {
+  critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: 'ℹ️',
+};
+const CATEGORY_LABEL: Record<string, string> = {
+  security: '🔒 Security',
+  bugs: '🐛 Bug',
+  performance: '⚡ Performance',
+  codeQuality: '🧹 Code quality',
+  suggestions: '💡 Suggestion',
+};
+
+/**
+ * Formatea un finding como cuerpo de comentario inline (corto, accionable).
+ * Pensado para verse bien en el panel de "Files changed" de GitHub.
+ */
+export function formatInlineComment(
+  finding: import('./types').ReviewFinding,
+  category: string,
+): string {
+  const sev = SEVERITY_EMOJI[finding.severity] ?? '❓';
+  const cat = CATEGORY_LABEL[category] ?? category;
+  const cwe = finding.cweId ? ` · \`${finding.cweId}\`` : '';
+
+  let body = `**${sev} ${cat} — ${finding.severity.toUpperCase()}: ${finding.title}**${cwe}\n\n`;
+  body += `${finding.description}\n\n`;
+  if (finding.impact) body += `> ⚠️ **Impact:** ${finding.impact}\n\n`;
+  body += `**Suggested fix:**\n\n${finding.suggestion}\n\n`;
+  body += `<sub>🤖 PR Sentinel</sub>`;
+  return body;
+}
+
+/**
+ * Cuerpo principal para un review inline: resumen + metadata + lista corta
+ * de findings y, opcionalmente, los "leftover" findings que no pudieron
+ * anclarse a una línea del diff. Esto garantiza que ningún hallazgo se pierda
+ * aunque el modelo se equivoque con el número de línea.
+ */
+export function formatInlineReviewBody(
+  review: ReviewResult,
+  inlineCount: number,
+  leftover: Array<{ finding: import('./types').ReviewFinding; category: string }>,
+): string {
+  const riskEmoji: Record<string, string> = {
+    critical: '🔴', high: '🟠', medium: '🟡', low: '🟢', clean: '✅',
+  };
+  const marker =
+    review.metadata.reviewedHeadSha && review.metadata.sourcePrUrl
+      ? buildReviewMarker({
+          headSha: review.metadata.reviewedHeadSha,
+          prUrl: review.metadata.sourcePrUrl,
+          model: review.metadata.modelUsed,
+        }) + '\n'
+      : '';
+
+  const totalFindings =
+    review.categories.security.length +
+    review.categories.bugs.length +
+    review.categories.performance.length +
+    review.categories.codeQuality.length +
+    review.categories.suggestions.length;
+
+  let md = marker + `# 🤖 PR Sentinel — Inline Code Review\n\n`;
+  md += `## ${riskEmoji[review.overallRiskLevel] ?? '❓'} Overall Risk: **${review.overallRiskLevel.toUpperCase()}**\n\n`;
+  md += `${review.summary}\n\n`;
+  md += `📍 **${inlineCount}** finding${inlineCount === 1 ? '' : 's'} posted as inline comments below.`;
+  if (leftover.length > 0) {
+    md += ` ${leftover.length} additional finding${leftover.length === 1 ? '' : 's'} listed here (no matching diff line).`;
+  }
+  md += '\n\n';
+
+  // Metadata
+  md += `<details>\n<summary>📊 Analysis Metadata</summary>\n\n`;
+  md += `| Metric | Value |\n|--------|-------|\n`;
+  md += `| Model | ${review.metadata.modelUsed} |\n`;
+  md += `| Cache Hit | ${review.metadata.cacheHit ? '✅ Yes' : '❌ No'} |\n`;
+  md += `| Cached Tokens | ${review.metadata.cachedTokens.toLocaleString()} |\n`;
+  md += `| Total Tokens | ${review.metadata.totalTokens.toLocaleString()} |\n`;
+  md += `| Processing Time | ${review.metadata.processingTimeMs}ms |\n`;
+  md += `| Findings | ${totalFindings} (${inlineCount} inline + ${leftover.length} general) |\n`;
+  if (review.metadata.reviewedHeadSha) {
+    md += `| Reviewed Head SHA | \`${review.metadata.reviewedHeadSha.slice(0, 12)}\` |\n`;
+  }
+  md += `\n</details>\n\n`;
+
+  if (leftover.length > 0) {
+    md += `---\n\n### Findings without an exact diff line\n\n`;
+    md += `These findings reference code that doesn't map cleanly to a single line in this diff (e.g. cross-file concerns or unchanged context). Listed here so nothing is lost.\n\n`;
+    for (const { finding, category } of leftover) {
+      const sev = SEVERITY_EMOJI[finding.severity] ?? '❓';
+      const cat = CATEGORY_LABEL[category] ?? category;
+      const loc = finding.lineRange
+        ? `\`${finding.file}\` (${finding.lineRange})`
+        : `\`${finding.file}\``;
+      md += `#### ${sev} ${cat} — ${finding.severity.toUpperCase()}: ${finding.title}\n`;
+      md += `📄 ${loc}`;
+      if (finding.cweId) md += ` · 🏷️ \`${finding.cweId}\``;
+      md += `\n\n${finding.description}\n\n`;
+      if (finding.impact) md += `> ⚠️ **Impact:** ${finding.impact}\n\n`;
+      md += `**Suggested fix:**\n\n${finding.suggestion}\n\n---\n\n`;
+    }
+  }
+
+  if (review.positiveAspects.length > 0) {
+    md += `### ✨ Positive Aspects\n\n`;
+    for (const a of review.positiveAspects) md += `- ${a}\n`;
+    md += '\n';
+  }
+
+  md += `\n*Generated by PR Sentinel — AI-powered code review using ${review.metadata.modelUsed}*`;
+  return md;
 }

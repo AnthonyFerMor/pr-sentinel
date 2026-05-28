@@ -134,6 +134,74 @@ export async function postReviewComment(
 }
 
 /**
+ * Un comentario inline para el review API.
+ * Mapea 1:1 a lo que GitHub espera en `comments[]` de `createReview`.
+ */
+export interface InlineComment {
+  path: string;
+  /** Línea final del comentario (lado nuevo del diff). */
+  line: number;
+  /** Línea inicial opcional para comentarios multi-línea. */
+  startLine?: number;
+  body: string;
+}
+
+/**
+ * Postea el review en modo "inline": un review único de GitHub con
+ * comentarios anclados a líneas específicas del diff. Es lo que hacen
+ * herramientas como CodeRabbit/Greptile — el feedback aparece donde
+ * está el código, no en un comentario gigante al final.
+ *
+ * - `headSha`: SHA del commit sobre el que se hace el review. GitHub lo
+ *   exige porque los comentarios se anclan a ese commit; si el PR avanza,
+ *   GitHub los marca como "outdated" automáticamente.
+ * - `event: 'COMMENT'` — no aprueba ni rechaza, sólo comenta. Coherente
+ *   con un revisor automático (nunca queremos bloquear merges).
+ */
+export async function postInlineReview(
+  pr: PRInfo,
+  params: {
+    headSha: string;
+    body: string;
+    comments: InlineComment[];
+  },
+  githubToken?: string,
+): Promise<{ reviewUrl: string }> {
+  const octokit = getOctokit(githubToken);
+
+  const { data } = await octokit.rest.pulls.createReview({
+    owner: pr.owner,
+    repo: pr.repo,
+    pull_number: pr.pullNumber,
+    commit_id: params.headSha,
+    body: params.body,
+    event: 'COMMENT',
+    comments: params.comments.map((c) => {
+      const base: {
+        path: string;
+        body: string;
+        line: number;
+        side: 'RIGHT';
+        start_line?: number;
+        start_side?: 'RIGHT';
+      } = {
+        path: c.path,
+        body: c.body,
+        line: c.line,
+        side: 'RIGHT',
+      };
+      if (typeof c.startLine === 'number' && c.startLine < c.line) {
+        base.start_line = c.startLine;
+        base.start_side = 'RIGHT';
+      }
+      return base;
+    }),
+  });
+
+  return { reviewUrl: data.html_url };
+}
+
+/**
  * Busca el último comentario de PR Sentinel en un PR (identificado por su marker).
  * Sirve para el "reply mode": en vez de postear un comentario nuevo en cada
  * revisión, actualizamos el existente para no llenar el PR de ruido.

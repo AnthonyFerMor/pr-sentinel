@@ -15,14 +15,21 @@ import {
   fetchPRMetadata,
   fetchPRFiles,
   postReviewComment,
+  postInlineReview,
   findLatestReviewComment,
   updateReviewComment,
 } from './github';
 import { processDiff, getChunkingSummary } from './chunking';
 import { analyzeChunk, scoutHotspots, getPrimaryModelName } from './gemini';
-import { formatReview, Hotspot } from './prompt';
+import { formatReview, formatInlineComment, formatInlineReviewBody, Hotspot } from './prompt';
+import { buildValidLineMap, partitionFindings } from './patch-lines';
 import { resolveActiveSkills } from './skills';
-import { ReviewResult, StreamEvent, PRInfo } from './types';
+import { ReviewResult, StreamEvent, PRInfo, DiffFile } from './types';
+
+// Máximo de comentarios inline en una sola review request (la API tiene un
+// límite suave y comentarios muy abundantes generan ruido). Si hay más, los
+// excedentes caen al cuerpo principal.
+const MAX_INLINE_COMMENTS = 30;
 
 const TWO_PASS_ENABLED = process.env.TWO_PASS_ENABLED?.trim().toLowerCase() === 'true';
 const TWO_PASS_THRESHOLD = Number.parseInt(process.env.TWO_PASS_THRESHOLD ?? '12000', 10);
@@ -55,6 +62,12 @@ export interface RunReviewOptions {
   mode?: ReviewMode;
   /** Output format for the GitHub comment. 'caveman' = ultra-terse, ~70% fewer output tokens. Default = 'full'. */
   reviewStyle?: ReviewStyle;
+  /**
+   * Si true, postea cada finding como inline comment anclado a su línea del
+   * diff (review API de GitHub). Si false, postea un único comentario al final.
+   * Default = true: más útil para el desarrollador.
+   */
+  inlineMode?: boolean;
 }
 
 export interface RunReviewOutcome {
@@ -147,7 +160,21 @@ function mergeChunkReviews(
   };
 }
 
-/** Postea o actualiza el comentario del review en GitHub, respetando reply mode. */
+/**
+ * Postea el review en GitHub. Soporta dos modos:
+ *
+ *  - **inline** (default): usa la Pull Request Review API para anclar cada
+ *    finding a la línea exacta del diff. Findings sin línea válida caen al
+ *    cuerpo principal del review para que nada se pierda.
+ *
+ *  - **comment** (legacy / `inlineMode=false` o `updateExisting=true`):
+ *    postea o actualiza un único comentario al final del PR. Útil para el
+ *    flujo de "reply mode" porque inline reviews no se pueden editar.
+ *
+ * Si el modo inline falla por cualquier razón (422 en alguna línea, falta de
+ * permisos, etc.), hace fallback al modo comentario para que el review siempre
+ * termine publicándose.
+ */
 async function publishReview(
   prInfo: PRInfo,
   review: ReviewResult,
@@ -155,7 +182,65 @@ async function publishReview(
   updateExisting: boolean,
   githubToken?: string,
   reviewStyle?: ReviewStyle,
+  options?: { inlineMode?: boolean; diffFiles?: DiffFile[]; headSha?: string },
 ): Promise<{ commentUrl?: string; commentError?: string }> {
+  const inlineMode = options?.inlineMode ?? false;
+  const diffFiles = options?.diffFiles;
+  const headSha = options?.headSha;
+
+  // Inline mode requiere headSha + diff files. Si falta algo o si estamos en
+  // reply mode (updateExisting), caemos al modo comentario.
+  const canUseInline =
+    inlineMode &&
+    !updateExisting &&
+    !!headSha &&
+    !!diffFiles &&
+    diffFiles.length > 0;
+
+  if (canUseInline) {
+    try {
+      const validLines = buildValidLineMap(diffFiles!);
+      const partition = partitionFindings(review.categories, validLines);
+
+      // Respeta el cap de comentarios inline. Excedentes → leftover.
+      const sortedInline = [...partition.inline].sort((a, b) => severityWeight(b.finding.severity) - severityWeight(a.finding.severity));
+      const inlineKept = sortedInline.slice(0, MAX_INLINE_COMMENTS);
+      const inlineOverflow = sortedInline.slice(MAX_INLINE_COMMENTS);
+      const leftover = [...partition.leftover, ...inlineOverflow.map((i) => ({ finding: i.finding, category: i.category }))];
+
+      const body = formatInlineReviewBody(review, inlineKept.length, leftover);
+      const comments = inlineKept.map((entry) => ({
+        path: entry.finding.file,
+        line: entry.line,
+        startLine: entry.startLine,
+        body: formatInlineComment(entry.finding, entry.category),
+      }));
+
+      emit({
+        type: 'status',
+        message: `📝 Posting inline review (${comments.length} inline + ${leftover.length} general)...`,
+      });
+
+      const { reviewUrl } = await postInlineReview(
+        prInfo,
+        { headSha: headSha!, body, comments },
+        githubToken,
+      );
+      review.metadata.commentUrl = reviewUrl;
+      emit({ type: 'status', message: `✅ Inline review posted: ${reviewUrl}` });
+      return { commentUrl: reviewUrl };
+    } catch (inlineErr) {
+      const msg = inlineErr instanceof Error ? inlineErr.message : 'Unknown error';
+      console.warn(`[publishReview] Inline mode failed, falling back to comment mode: ${msg}`);
+      emit({
+        type: 'status',
+        message: `⚠️ Inline review failed (${msg.slice(0, 80)}). Falling back to single comment.`,
+      });
+      // Continúa al fallback de comentario abajo.
+    }
+  }
+
+  // Modo comentario tradicional (legacy o fallback).
   const markdown = formatReview(review, reviewStyle);
 
   try {
@@ -183,6 +268,17 @@ async function publishReview(
       message: `GitHub comment failed. Check token permissions for ${prInfo.owner}/${prInfo.repo}. GitHub said: ${msg}`,
     });
     return { commentError: msg };
+  }
+}
+
+function severityWeight(severity: string): number {
+  switch (severity) {
+    case 'critical': return 5;
+    case 'high': return 4;
+    case 'medium': return 3;
+    case 'low': return 2;
+    case 'info': return 1;
+    default: return 0;
   }
 }
 
@@ -284,7 +380,16 @@ export async function runReview(
       },
     };
 
-    const published = await publishReview(prInfo, review, emit, updateExisting, githubToken, options.reviewStyle);
+    // Clean review (no diff): no hay nada que anclar inline, postear como comentario.
+    const published = await publishReview(
+      prInfo,
+      review,
+      emit,
+      updateExisting,
+      githubToken,
+      options.reviewStyle,
+      { inlineMode: false },
+    );
     emit({ type: 'complete', data: review });
     return { review, skipped: false, ...published };
   }
@@ -417,7 +522,16 @@ export async function runReview(
   }
 
   // 7. Publish to GitHub (mandatory deliverable)
-  const published = await publishReview(prInfo, review, emit, updateExisting, githubToken, options.reviewStyle);
+  const inlineMode = options.inlineMode ?? true;
+  const published = await publishReview(
+    prInfo,
+    review,
+    emit,
+    updateExisting,
+    githubToken,
+    options.reviewStyle,
+    { inlineMode, diffFiles: processedDiff.files, headSha: metadata.headSha },
+  );
 
   // 8. Post re-verification summary when updating an existing review
   if (updateExisting && published.commentUrl && previousReviewBody) {

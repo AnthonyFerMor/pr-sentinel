@@ -42,6 +42,7 @@ export async function GET() {
     githubPATSet: !!githubPAT,
     githubPATMasked: githubPAT ? maskKey(githubPAT) : null,
     reviewStyle: kvCfg?.reviewStyle ?? 'full',
+    inlineMode: kvCfg?.inlineMode ?? true,
     storageAvailable: isStorageAvailable(),
   });
 }
@@ -52,7 +53,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { geminiApiKey?: string; githubPAT?: string; reviewStyle?: string };
+  let body: { geminiApiKey?: string; githubPAT?: string; reviewStyle?: string; inlineMode?: boolean };
   try {
     body = await request.json();
   } catch {
@@ -72,6 +73,9 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
+  if (body.inlineMode !== undefined && typeof body.inlineMode !== 'boolean') {
+    return NextResponse.json({ error: 'inlineMode must be a boolean' }, { status: 400 });
+  }
 
   // Persist to KV (authoritative). Empty string deletes the field.
   if (isStorageAvailable()) {
@@ -79,6 +83,7 @@ export async function POST(request: NextRequest) {
       geminiApiKey: body.geminiApiKey,
       githubPAT: body.githubPAT,
       reviewStyle: body.reviewStyle as ReviewStyle | undefined,
+      inlineMode: body.inlineMode,
     });
   }
 
@@ -94,6 +99,7 @@ export async function POST(request: NextRequest) {
     githubPATSet: !!body.githubPAT,
     githubPATMasked: body.githubPAT ? maskKey(body.githubPAT) : null,
     reviewStyle: body.reviewStyle as ReviewStyle | undefined,
+    inlineMode: body.inlineMode,
     storageAvailable: isStorageAvailable(),
   });
 }

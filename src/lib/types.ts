@@ -128,11 +128,21 @@ export interface PullRequestSummary {
 
 /**
  * Un hallazgo individual dentro del review.
+ *
+ * `lineNumber` es la línea principal a la que apunta el finding en el archivo nuevo,
+ * lo usamos para anclar comentarios inline en el diff. `startLine` opcional para
+ * findings multi-línea. `lineRange` queda como string libre para retro-compat con
+ * markdown ("L42-L48").
  */
 export interface ReviewFinding {
   title: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   file: string;
+  /** Línea final (RIGHT side) para anclar el comentario inline. */
+  lineNumber?: number;
+  /** Línea inicial opcional para findings multi-línea. */
+  startLine?: number;
+  /** Backward-compat: string libre tipo "L42-L48". */
   lineRange?: string;
   description: string;
   impact?: string;

@@ -33,7 +33,7 @@ import { getRepoOwner, getUserConfig, ReviewStyle } from '@/lib/storage';
 async function resolveCredentials(
   owner: string,
   repo: string,
-): Promise<{ githubToken?: string; geminiApiKey?: string; userId?: string; reviewStyle?: ReviewStyle }> {
+): Promise<{ githubToken?: string; geminiApiKey?: string; userId?: string; reviewStyle?: ReviewStyle; inlineMode?: boolean }> {
   try {
     const userId = await getRepoOwner(owner, repo);
     if (!userId) return {};
@@ -43,6 +43,7 @@ async function resolveCredentials(
       githubToken: cfg?.githubPAT,
       geminiApiKey: cfg?.geminiApiKey,
       reviewStyle: cfg?.reviewStyle,
+      inlineMode: cfg?.inlineMode,
     };
   } catch (err) {
     console.warn('[webhook] credential lookup failed, falling back to server:', err);
@@ -120,6 +121,8 @@ function handlePullRequest(payload: PullRequestPayload) {
   after(async () => {
     try {
       const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
+      // Reply mode (updateExisting) forces comment-mode (inline reviews can't be edited).
+      // For first-time reviews, default to inline if user opted in (default true).
       const outcome = await runReview(prUrl, {
         updateExisting: true,
         skipIfReviewed: true,
@@ -127,6 +130,7 @@ function handlePullRequest(payload: PullRequestPayload) {
         githubToken: creds.githubToken,
         geminiApiKey: creds.geminiApiKey,
         reviewStyle: creds.reviewStyle,
+        inlineMode: creds.inlineMode ?? true,
       });
       console.log(
         `[webhook] ${fullName} ${action} → ` +

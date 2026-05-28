@@ -29,6 +29,12 @@ export interface UserConfig {
   githubPAT?: string;
   /** Output format for PR review comments. Default = 'full'. User opt-in for 'caveman' (token-saving). */
   reviewStyle?: ReviewStyle;
+  /**
+   * Inline mode: si true, postea cada finding como comentario inline anclado
+   * a la línea exacta del diff (estilo CodeRabbit). Si false, usa un solo
+   * comentario gigante al final del PR. Default = true.
+   */
+  inlineMode?: boolean;
 }
 
 export interface EnabledRepo {
@@ -128,6 +134,7 @@ interface EncryptedUserConfig {
   geminiApiKey?: string; // encrypted
   githubPAT?: string;    // encrypted
   reviewStyle?: ReviewStyle; // plaintext (non-sensitive preference)
+  inlineMode?: boolean;      // plaintext (non-sensitive preference)
 }
 
 /**
@@ -153,6 +160,9 @@ export async function saveUserConfig(userId: string, partial: UserConfig): Promi
   if (partial.reviewStyle !== undefined) {
     next.reviewStyle = partial.reviewStyle;
   }
+  if (partial.inlineMode !== undefined) {
+    next.inlineMode = partial.inlineMode;
+  }
 
   await redis.set(k.user(userId), next);
 }
@@ -169,6 +179,7 @@ export async function getUserConfig(userId: string): Promise<UserConfig | null> 
     geminiApiKey: stored.geminiApiKey ? decrypt(stored.geminiApiKey) ?? undefined : undefined,
     githubPAT: stored.githubPAT ? decrypt(stored.githubPAT) ?? undefined : undefined,
     reviewStyle: stored.reviewStyle,
+    inlineMode: stored.inlineMode,
   };
 }
 
