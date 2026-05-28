@@ -6,6 +6,7 @@ import ReviewForm from '@/components/ReviewForm';
 import ReviewStream from '@/components/ReviewStream';
 import SkillSelector, { loadStoredSkills } from '@/components/SkillSelector';
 import OnboardingBanner from '@/components/OnboardingBanner';
+import HowItWorks from '@/components/HowItWorks';
 import Header from '@/components/Header';
 
 export default function Home() {
@@ -191,6 +192,9 @@ export default function Home() {
               </section>
             )}
           </div>
+
+          {/* How it works — only show when no review is happening */}
+          {!isLoading && !review && !error && <HowItWorks />}
         </div>
 
         <footer className="border-t border-white/5 py-6 text-center text-xs text-gray-600">

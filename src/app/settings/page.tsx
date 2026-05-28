@@ -5,6 +5,23 @@ import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 
+interface CacheStats {
+  primaryModel?: string;
+  cacheMode?: 'explicit' | 'implicit';
+  cacheExists?: boolean;
+  cacheName?: string | null;
+  cacheAgeMinutes?: number;
+  cacheHitCount?: number;
+  cacheMissCount?: number;
+  lastUsage?: {
+    cacheHit: boolean;
+    cachedTokens: number;
+    totalTokens: number;
+    at: number;
+    modelUsed: string;
+  } | null;
+}
+
 export default function SettingsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -13,6 +30,8 @@ export default function SettingsPage() {
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
+  const [showKey, setShowKey] = useState(false);
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -25,14 +44,19 @@ export default function SettingsPage() {
     fetch('/api/settings')
       .then((r) => r.json())
       .then((data) => {
-        if (data.geminiKeySet) {
-          setMaskedKey(data.geminiKeyMasked);
-        }
+        if (data.geminiKeySet) setMaskedKey(data.geminiKeyMasked);
       })
+      .catch(() => {});
+
+    // Load cache stats (hackathon proof-of-context-caching)
+    fetch('/api/cache/stats')
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data) setCacheStats(data); })
       .catch(() => {});
   }, []);
 
   const handleSave = async () => {
+    if (!geminiKey.trim()) return;
     setSaving(true);
     setMessage(null);
     try {
@@ -45,7 +69,7 @@ export default function SettingsPage() {
       if (!response.ok) throw new Error(data.error || 'Failed to save');
       setMaskedKey(data.geminiKeyMasked);
       setGeminiKey('');
-      setMessage({ type: 'success', text: 'API key saved securely.' });
+      setMessage({ type: 'success', text: 'API key saved securely. Your reviews now use this key.' });
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
     } finally {
@@ -78,7 +102,13 @@ export default function SettingsPage() {
       <>
         <Header />
         <main className="min-h-screen bg-gray-950 flex items-center justify-center">
-          <p className="text-gray-400">Loading...</p>
+          <div className="flex items-center gap-3 text-gray-400">
+            <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Loading session...
+          </div>
         </main>
       </>
     );
@@ -90,103 +120,275 @@ export default function SettingsPage() {
       <main className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(120,80,255,0.15),transparent)] pointer-events-none" />
 
-        <div className="relative max-w-2xl mx-auto px-4 pt-10 pb-20">
-          <h2 className="text-2xl font-bold text-white tracking-tight mb-1">Settings</h2>
-          <p className="text-gray-400 text-sm mb-8">
-            Configure your API keys and preferences. Keys are encrypted and stored securely.
-          </p>
+        <div className="relative max-w-3xl mx-auto px-4 pt-10 pb-20">
+          {/* Header */}
+          <div className="mb-8">
+            <h2 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Settings</h2>
+            <p className="text-gray-400 text-sm mt-1">
+              Manage your account, API keys, and view system status.
+            </p>
+          </div>
 
-          {/* Account info */}
-          <section className="bg-gray-900/80 backdrop-blur-xl border border-white/10 rounded-2xl p-6 mb-6">
-            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Account</h3>
-            <div className="flex items-center gap-4">
-              {session?.user?.image && (
-                <img src={session.user.image} alt="" className="w-12 h-12 rounded-full border border-white/10" />
-              )}
-              <div>
-                <p className="text-white font-medium">{session?.user?.name || session?.user?.login || 'User'}</p>
-                <p className="text-sm text-gray-400">{session?.user?.email || 'GitHub OAuth'}</p>
-              </div>
-              <span className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          {/* Account */}
+          <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Account</h3>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 <span className="text-xs text-emerald-400 font-medium">Connected</span>
               </span>
             </div>
 
-            <div className="mt-4 pt-4 border-t border-white/5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-300 font-medium">GitHub Token</p>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Provided by OAuth. Used to read PRs and post comments.
+            <div className="p-6">
+              <div className="flex items-center gap-4 mb-4">
+                {session?.user?.image ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={session.user.image}
+                    alt=""
+                    className="w-14 h-14 rounded-full border-2 border-violet-500/30 shadow-lg shadow-violet-500/20"
+                  />
+                ) : (
+                  <div className="w-14 h-14 rounded-full bg-gradient-to-br from-violet-500 to-blue-600 flex items-center justify-center text-xl font-bold text-white">
+                    {(session?.user?.name?.[0] || session?.user?.login?.[0] || '?').toUpperCase()}
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-white font-semibold truncate">
+                    {session?.user?.name || session?.user?.login || 'User'}
+                  </p>
+                  {session?.user?.email && (
+                    <p className="text-sm text-gray-400 truncate">{session.user.email}</p>
+                  )}
+                  {session?.user?.login && (
+                    <p className="text-xs text-gray-500 mt-0.5 font-mono">@{session.user.login}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-white/5 grid sm:grid-cols-2 gap-3">
+                <div className="rounded-lg bg-gray-950/40 border border-white/5 p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-gray-500 uppercase tracking-wider">GitHub Token</span>
+                    <span className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-2 py-0.5">
+                      Auto
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    From OAuth. Used to read PRs and post comments.
                   </p>
                 </div>
-                <span className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-2.5 py-1">
-                  Auto
-                </span>
+                <div className="rounded-lg bg-gray-950/40 border border-white/5 p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-gray-500 uppercase tracking-wider">Auth method</span>
+                    <span className="text-[10px] text-violet-400 bg-violet-500/10 border border-violet-500/20 rounded-full px-2 py-0.5">
+                      GitHub OAuth
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    JWT session, scope: <code className="text-violet-300">repo</code>
+                  </p>
+                </div>
               </div>
             </div>
           </section>
 
           {/* Gemini API key */}
-          <section className="bg-gray-900/80 backdrop-blur-xl border border-white/10 rounded-2xl p-6 mb-6">
-            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Gemini API Key</h3>
-            <p className="text-sm text-gray-400 mb-4">
-              Enter your own Gemini API key from{' '}
-              <a href="https://ai.google.dev" target="_blank" rel="noreferrer" className="text-violet-400 hover:text-violet-300 underline">
-                Google AI Studio
-              </a>
-              . If empty, the server default key is used.
-            </p>
-
-            {maskedKey && (
-              <div className="flex items-center gap-2 mb-3 p-3 rounded-lg bg-gray-800/50 border border-white/5">
-                <span className="text-sm text-gray-300 font-mono">{maskedKey}</span>
-                <button
-                  onClick={handleClear}
-                  disabled={saving}
-                  className="ml-auto text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
-                >
-                  Remove
-                </button>
-              </div>
-            )}
-
-            <div className="flex gap-3">
-              <input
-                type="password"
-                value={geminiKey}
-                onChange={(e) => setGeminiKey(e.target.value)}
-                placeholder={maskedKey ? 'Enter new key to replace...' : 'AIzaSy...'}
-                className="flex-1 px-4 py-3 bg-gray-800/50 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 text-sm font-mono"
-              />
-              <button
-                onClick={handleSave}
-                disabled={saving || !geminiKey.trim()}
-                className="px-5 py-3 bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all text-sm"
-              >
-                {saving ? 'Saving...' : 'Save'}
-              </button>
+          <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+                <span className="text-violet-400">🔑</span>
+                Gemini API Key
+              </h3>
+              {maskedKey ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <span className="text-xs text-emerald-400 font-medium">Your key</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  <span className="text-xs text-amber-400 font-medium">Using fallback</span>
+                </span>
+              )}
             </div>
 
-            {message && (
-              <p className={`mt-3 text-sm ${message.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
-                {message.text}
+            <div className="p-6">
+              <p className="text-sm text-gray-400 mb-4 leading-relaxed">
+                Get a free key from{' '}
+                <a
+                  href="https://ai.google.dev"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-violet-400 hover:text-violet-300 underline underline-offset-2"
+                >
+                  Google AI Studio
+                </a>
+                . Stored encrypted in an httpOnly cookie, never sent to the browser after save.
+                Without your own key, reviews use the shared server fallback (slower under load).
               </p>
-            )}
+
+              {maskedKey && (
+                <div className="flex items-center gap-3 mb-4 p-3 rounded-lg bg-gray-950/50 border border-white/5">
+                  <span className="text-violet-400">✓</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-gray-500 mb-0.5">Current key</p>
+                    <p className="text-sm text-gray-200 font-mono truncate">{maskedKey}</p>
+                  </div>
+                  <button
+                    onClick={handleClear}
+                    disabled={saving}
+                    className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50 font-medium px-3 py-1.5 rounded-md hover:bg-red-500/10 transition"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+
+              <label htmlFor="gemini-key" className="block text-xs text-gray-500 mb-2">
+                {maskedKey ? 'Replace key' : 'Add your key'}
+              </label>
+              <div className="flex gap-3">
+                <div className="relative flex-1">
+                  <input
+                    id="gemini-key"
+                    type={showKey ? 'text' : 'password'}
+                    value={geminiKey}
+                    onChange={(e) => setGeminiKey(e.target.value)}
+                    placeholder="AIzaSy..."
+                    className="w-full px-4 py-3 pr-10 bg-gray-800/50 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 text-sm font-mono"
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500 hover:text-gray-300"
+                    aria-label={showKey ? 'Hide key' : 'Show key'}
+                  >
+                    {showKey ? '🙈' : '👁'}
+                  </button>
+                </div>
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !geminiKey.trim()}
+                  className="px-5 py-3 bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-500 hover:to-blue-500 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all text-sm shadow-lg shadow-violet-500/20 disabled:shadow-none"
+                >
+                  {saving ? 'Saving...' : 'Save key'}
+                </button>
+              </div>
+
+              {message && (
+                <div className={`mt-3 flex items-start gap-2 text-sm ${
+                  message.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  <span aria-hidden="true">{message.type === 'success' ? '✓' : '⚠'}</span>
+                  <span>{message.text}</span>
+                </div>
+              )}
+            </div>
           </section>
+
+          {/* Context cache stats — proof of caching working */}
+          {cacheStats && (
+            <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+                <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+                  <span className="text-cyan-400">⚡</span>
+                  Context cache
+                </h3>
+                <span className="text-[10px] text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 rounded-full px-2 py-0.5 uppercase tracking-wider">
+                  {cacheStats.cacheMode === 'explicit' ? 'Explicit caching' : 'Implicit caching'}
+                </span>
+              </div>
+
+              <div className="p-6">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                  <CacheStat label="Hits" value={cacheStats.cacheHitCount ?? 0} color="emerald" />
+                  <CacheStat label="Misses" value={cacheStats.cacheMissCount ?? 0} color="amber" />
+                  <CacheStat
+                    label="Cache age"
+                    value={cacheStats.cacheAgeMinutes != null && cacheStats.cacheExists ? `${cacheStats.cacheAgeMinutes}m` : '—'}
+                    color="violet"
+                  />
+                  <CacheStat
+                    label="Last cached"
+                    value={cacheStats.lastUsage?.cachedTokens != null ? cacheStats.lastUsage.cachedTokens.toLocaleString() : '—'}
+                    color="cyan"
+                  />
+                </div>
+
+                {cacheStats.cacheName && (
+                  <div className="rounded-lg bg-gray-950/50 border border-white/5 p-3 mb-3">
+                    <p className="text-xs text-gray-500 mb-1">Active cache name</p>
+                    <code className="text-xs text-cyan-300 font-mono break-all">{cacheStats.cacheName}</code>
+                  </div>
+                )}
+
+                {cacheStats.lastUsage && (
+                  <div className="rounded-lg bg-gray-950/50 border border-white/5 p-3 text-xs text-gray-400">
+                    <p className="text-gray-500 mb-1">Last review</p>
+                    <p>
+                      Cache hit: <span className={cacheStats.lastUsage.cacheHit ? 'text-emerald-400' : 'text-amber-400'}>
+                        {cacheStats.lastUsage.cacheHit ? '✓ Yes' : '✗ No (miss)'}
+                      </span>
+                      {' · '}
+                      Total tokens: <span className="text-gray-300 tabular-nums">{cacheStats.lastUsage.totalTokens.toLocaleString()}</span>
+                      {' · '}
+                      Model: <span className="text-violet-300 font-mono">{cacheStats.lastUsage.modelUsed}</span>
+                    </p>
+                  </div>
+                )}
+
+                {!cacheStats.cacheExists && (
+                  <p className="text-xs text-gray-500">
+                    No active cache yet. Run a review to populate it — the system prompt + rubric will be cached for ~1 hour.
+                  </p>
+                )}
+              </div>
+            </section>
+          )}
 
           {/* Info box */}
           <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4 text-sm text-blue-300">
-            <p className="font-medium mb-1">How credentials work</p>
-            <ul className="list-disc list-inside text-xs text-blue-300/80 space-y-1">
-              <li>Your GitHub token comes from OAuth — no need to paste a PAT.</li>
-              <li>Your Gemini API key is encrypted server-side and never exposed to the browser.</li>
-              <li>Webhook and cron reviews always use the server default keys.</li>
+            <p className="font-semibold mb-2 flex items-center gap-2">
+              <span>🔐</span> How credentials work
+            </p>
+            <ul className="space-y-1.5 text-xs text-blue-300/80">
+              <li className="flex gap-2">
+                <span className="text-blue-400">•</span>
+                Your GitHub token comes from OAuth — no PAT needed.
+              </li>
+              <li className="flex gap-2">
+                <span className="text-blue-400">•</span>
+                Your Gemini API key is encrypted server-side and never exposed to the browser.
+              </li>
+              <li className="flex gap-2">
+                <span className="text-blue-400">•</span>
+                Webhook and cron reviews always use the server default keys.
+              </li>
+              <li className="flex gap-2">
+                <span className="text-blue-400">•</span>
+                No databases — sessions live in JWTs, preferences in localStorage, keys in iron-session cookies.
+              </li>
             </ul>
           </div>
         </div>
       </main>
     </>
+  );
+}
+
+function CacheStat({ label, value, color }: { label: string; value: string | number; color: 'emerald' | 'amber' | 'violet' | 'cyan' }) {
+  const colors: Record<string, string> = {
+    emerald: 'border-emerald-500/20 bg-emerald-500/5 text-emerald-400',
+    amber: 'border-amber-500/20 bg-amber-500/5 text-amber-400',
+    violet: 'border-violet-500/20 bg-violet-500/5 text-violet-400',
+    cyan: 'border-cyan-500/20 bg-cyan-500/5 text-cyan-400',
+  };
+  return (
+    <div className={`rounded-lg border ${colors[color]} p-3`}>
+      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">{label}</p>
+      <p className="text-xl font-bold tabular-nums">{value}</p>
+    </div>
   );
 }
