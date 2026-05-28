@@ -13,12 +13,28 @@ import { REVIEW_MARKER_NAME } from './review-marker';
 
 const DEFAULT_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.5-flash';
 
+/** Signatures that identify PR Sentinel's own comments — used to prevent self-reply loops. */
+const SELF_SIGNATURES = [
+  '🤖 PR Sentinel',
+  REVIEW_MARKER_NAME,
+  'PR Sentinel — conversational reply',
+  'PR Sentinel — automated re-verification',
+];
+
+/** Check if a comment was written by PR Sentinel itself. */
+function isSelfComment(commentBody: string): boolean {
+  return SELF_SIGNATURES.some((sig) => commentBody.includes(sig));
+}
+
 /** Check if a comment is addressed to PR Sentinel. */
 export function isAddressedToSentinel(
   commentBody: string,
   /** The body of the comment this is replying to (if it's a reply). */
   parentCommentBody?: string | null,
 ): boolean {
+  // Never respond to our own comments (prevent infinite loop).
+  if (isSelfComment(commentBody)) return false;
+
   const lower = commentBody.toLowerCase();
 
   // Direct mention

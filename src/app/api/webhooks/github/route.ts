@@ -100,10 +100,19 @@ function handlePullRequest(payload: PullRequestPayload) {
   return NextResponse.json({ ok: true, queued: prUrl }, { status: 202 });
 }
 
+// Bot usernames to ignore (prevent self-reply loops).
+const BOT_LOGINS = new Set(['pr-sentinel[bot]', 'pr-sentinel', 'github-actions[bot]']);
+
 function handleIssueComment(payload: IssueCommentPayload) {
   // Only handle newly created comments, not edits or deletes.
   if (payload.action !== 'created') {
     return NextResponse.json({ ok: true, ignored: `comment action '${payload.action}'` });
+  }
+
+  // Ignore comments from our own bot to prevent infinite loops.
+  const commentAuthor = payload.comment?.user?.login?.toLowerCase() ?? '';
+  if (BOT_LOGINS.has(commentAuthor)) {
+    return NextResponse.json({ ok: true, ignored: 'self-comment (bot)' });
   }
 
   // issue_comment fires for issues AND PRs. Confirm it's a PR.
@@ -156,6 +165,12 @@ function handleIssueComment(payload: IssueCommentPayload) {
 function handleReviewComment(payload: ReviewCommentPayload) {
   if (payload.action !== 'created') {
     return NextResponse.json({ ok: true, ignored: `review_comment action '${payload.action}'` });
+  }
+
+  // Ignore bot's own inline review comments.
+  const reviewAuthor = payload.comment?.user?.login?.toLowerCase() ?? '';
+  if (BOT_LOGINS.has(reviewAuthor)) {
+    return NextResponse.json({ ok: true, ignored: 'self-review-comment (bot)' });
   }
 
   const prUrl = payload.pull_request?.html_url;
