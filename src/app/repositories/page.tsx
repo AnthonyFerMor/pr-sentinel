@@ -104,6 +104,60 @@ export default function RepositoriesPage() {
   const [isLoadingRepos, setIsLoadingRepos] = useState(true);
   const inFlight = useRef<Set<string>>(new Set());
 
+  // Auto-bot state (server-side webhook persistence via KV).
+  const [autoBotRepos, setAutoBotRepos] = useState<Set<string>>(new Set());
+  const [autoBotPending, setAutoBotPending] = useState<Record<string, boolean>>({});
+  const [autoBotErrors, setAutoBotErrors] = useState<Record<string, string>>({});
+  const [autoBotAvailable, setAutoBotAvailable] = useState<boolean | null>(null);
+
+  // Load enabled repos once on mount.
+  useEffect(() => {
+    fetch('/api/repos/status')
+      .then((r) => r.json())
+      .then((data) => {
+        if (typeof data.storageAvailable === 'boolean') setAutoBotAvailable(data.storageAvailable);
+        if (Array.isArray(data.enabledRepos)) {
+          const set = new Set<string>(
+            data.enabledRepos.map((r: { owner: string; repo: string }) => `${r.owner}/${r.repo}`),
+          );
+          setAutoBotRepos(set);
+        }
+      })
+      .catch(() => setAutoBotAvailable(false));
+  }, []);
+
+  const toggleAutoBot = useCallback(async (repo: RepoItem) => {
+    const key = repoKey(repo);
+    const currentlyEnabled = autoBotRepos.has(key);
+    setAutoBotPending((p) => ({ ...p, [key]: true }));
+    setAutoBotErrors((e) => ({ ...e, [key]: '' }));
+
+    try {
+      const endpoint = currentlyEnabled ? '/api/repos/disable' : '/api/repos/enable';
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner: repo.owner, repo: repo.name }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+
+      setAutoBotRepos((prev) => {
+        const next = new Set(prev);
+        if (currentlyEnabled) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+    } catch (err) {
+      setAutoBotErrors((e) => ({
+        ...e,
+        [key]: err instanceof Error ? err.message : 'Failed to toggle auto-bot',
+      }));
+    } finally {
+      setAutoBotPending((p) => ({ ...p, [key]: false }));
+    }
+  }, [autoBotRepos]);
+
   useEffect(() => {
     const storedRepos = JSON.parse(localStorage.getItem(STORAGE_REPOS) ?? '[]') as RepoItem[];
     const storedMonitored = JSON.parse(localStorage.getItem(STORAGE_MONITORED) ?? '{}') as Record<string, boolean>;
@@ -383,7 +437,7 @@ export default function RepositoriesPage() {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      <label className="flex items-center gap-2 rounded-md border border-white/10 px-3 py-2 text-sm text-gray-300">
+                      <label className="flex items-center gap-2 rounded-md border border-white/10 px-3 py-2 text-sm text-gray-300" title="Polls every 60s while this page is open">
                         <input
                           type="checkbox"
                           checked={monitored[key] ?? false}
@@ -393,6 +447,41 @@ export default function RepositoriesPage() {
                           className="h-4 w-4 accent-cyan-400"
                         />
                         Auto-review
+                      </label>
+                      <label
+                        className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition ${
+                          autoBotRepos.has(key)
+                            ? 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+                            : 'border-white/10 text-gray-300'
+                        } ${autoBotAvailable === false || repo.source === 'manual' ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                        title={
+                          repo.source === 'manual'
+                            ? 'Auto-bot is only available for GitHub-linked repos.'
+                            : autoBotAvailable === false
+                              ? 'KV not configured on this deployment.'
+                              : 'Install a webhook on this repo. Reviews fire automatically on every new PR / commit, even when you are offline.'
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={autoBotRepos.has(key)}
+                          disabled={
+                            autoBotPending[key] ||
+                            autoBotAvailable === false ||
+                            repo.source === 'manual'
+                          }
+                          onChange={() => void toggleAutoBot(repo)}
+                          className="h-4 w-4 accent-amber-400"
+                        />
+                        <span className="flex items-center gap-1.5">
+                          🤖 Auto-bot
+                          {autoBotPending[key] && (
+                            <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" aria-hidden="true">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                          )}
+                        </span>
                       </label>
                       <button
                         type="button"
@@ -415,6 +504,12 @@ export default function RepositoriesPage() {
                   {repoErrors[key] && (
                     <p className="mt-4 rounded-md border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
                       {repoErrors[key]}
+                    </p>
+                  )}
+
+                  {autoBotErrors[key] && (
+                    <p className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-200">
+                      🤖 Auto-bot: {autoBotErrors[key]}
                     </p>
                   )}
 

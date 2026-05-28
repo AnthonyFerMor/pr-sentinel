@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.6.0",
+    "@upstash/redis": "^1.38.0",
     "iron-session": "^8.0.4",
     "next": "16.2.6",
     "next-auth": "^5.0.0-beta.31",

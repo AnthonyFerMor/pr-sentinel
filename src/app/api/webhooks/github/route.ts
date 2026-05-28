@@ -16,6 +16,38 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runReview } from '@/lib/run-review';
 import { handleCommentEvent } from '@/lib/conversational';
 import { parsePRUrl } from '@/lib/parser';
+import { getRepoOwner, getUserConfig } from '@/lib/storage';
+
+/**
+ * Resolve the credentials to use for a webhook-triggered review.
+ *
+ * Multi-tenant model:
+ *   - If a user has enabled auto-review on this repo (via /repositories UI),
+ *     their record is in KV. We use their stored PAT + Gemini key — meaning
+ *     the GitHub comment is posted as that user, and the Gemini quota is
+ *     billed to their key.
+ *   - If no record exists (e.g. someone wired this app's webhook URL into a
+ *     repo manually, or KV is unconfigured), we fall back to the server's
+ *     env-var credentials. This preserves the original single-tenant flow.
+ */
+async function resolveCredentials(
+  owner: string,
+  repo: string,
+): Promise<{ githubToken?: string; geminiApiKey?: string; userId?: string }> {
+  try {
+    const userId = await getRepoOwner(owner, repo);
+    if (!userId) return {};
+    const cfg = await getUserConfig(userId);
+    return {
+      userId,
+      githubToken: cfg?.githubPAT,
+      geminiApiKey: cfg?.geminiApiKey,
+    };
+  } catch (err) {
+    console.warn('[webhook] credential lookup failed, falling back to server:', err);
+    return {};
+  }
+}
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -80,16 +112,24 @@ function handlePullRequest(payload: PullRequestPayload) {
     return NextResponse.json({ ok: true, ignored: 'draft PR' });
   }
 
+  // Parse owner/repo from full_name to look up per-user credentials.
+  const fullName = payload.repository?.full_name ?? '';
+  const [owner, repo] = fullName.split('/');
+
   after(async () => {
     try {
+      const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
       const outcome = await runReview(prUrl, {
         updateExisting: true,
         skipIfReviewed: true,
         softDeadlineMs: (maxDuration - 5) * 1000,
+        githubToken: creds.githubToken,
+        geminiApiKey: creds.geminiApiKey,
       });
       console.log(
-        `[webhook] ${payload.repository?.full_name} ${action} → ` +
-          (outcome.skipped ? 'skipped (already reviewed)' : `reviewed: ${outcome.commentUrl ?? 'no comment'}`)
+        `[webhook] ${fullName} ${action} → ` +
+          (outcome.skipped ? 'skipped (already reviewed)' : `reviewed: ${outcome.commentUrl ?? 'no comment'}`) +
+          (creds.userId ? ` (as user ${creds.userId})` : ' (server credentials)'),
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';

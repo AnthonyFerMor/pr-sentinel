@@ -33,6 +33,14 @@ export default function SettingsPage() {
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [showKey, setShowKey] = useState(false);
 
+  // GitHub PAT (only needed for auto-bot on user's own repos)
+  const [pat, setPat] = useState('');
+  const [maskedPat, setMaskedPat] = useState<string | null>(null);
+  const [showPat, setShowPat] = useState(false);
+  const [savingPat, setSavingPat] = useState(false);
+  const [patMessage, setPatMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [storageAvailable, setStorageAvailable] = useState<boolean | null>(null);
+
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.push('/login');
@@ -45,6 +53,8 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then((data) => {
         if (data.geminiKeySet) setMaskedKey(data.geminiKeyMasked);
+        if (data.githubPATSet) setMaskedPat(data.githubPATMasked);
+        if (typeof data.storageAvailable === 'boolean') setStorageAvailable(data.storageAvailable);
       })
       .catch(() => {});
 
@@ -94,6 +104,48 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Clear failed' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSavePat = async () => {
+    if (!pat.trim()) return;
+    setSavingPat(true);
+    setPatMessage(null);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ githubPAT: pat }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to save');
+      setMaskedPat(data.githubPATMasked);
+      setPat('');
+      setPatMessage({ type: 'success', text: 'PAT saved. You can now enable the auto-bot on your repos.' });
+    } catch (err) {
+      setPatMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
+    } finally {
+      setSavingPat(false);
+    }
+  };
+
+  const handleClearPat = async () => {
+    setSavingPat(true);
+    setPatMessage(null);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ githubPAT: '' }),
+      });
+      if (!response.ok) throw new Error('Failed to clear');
+      setMaskedPat(null);
+      setPat('');
+      setPatMessage({ type: 'success', text: 'PAT removed. Auto-bot will no longer fire on your repos.' });
+    } catch (err) {
+      setPatMessage({ type: 'error', text: err instanceof Error ? err.message : 'Clear failed' });
+    } finally {
+      setSavingPat(false);
     }
   };
 
@@ -288,6 +340,111 @@ export default function SettingsPage() {
             </div>
           </section>
 
+          {/* GitHub PAT — required only for auto-bot on user's repos */}
+          <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+                <span className="text-amber-400">🤖</span>
+                GitHub PAT (Auto-bot)
+              </h3>
+              {maskedPat ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <span className="text-xs text-emerald-400 font-medium">PAT set</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-500/10 border border-gray-500/20">
+                  <span className="h-1.5 w-1.5 rounded-full bg-gray-500" />
+                  <span className="text-xs text-gray-400 font-medium">Not configured</span>
+                </span>
+              )}
+            </div>
+
+            <div className="p-6">
+              <p className="text-sm text-gray-400 mb-3 leading-relaxed">
+                Optional. <strong className="text-gray-200">Only needed to enable the auto-bot</strong> on your repositories.
+                Generate a fine-grained PAT at{' '}
+                <a
+                  href="https://github.com/settings/tokens?type=beta"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-amber-400 hover:text-amber-300 underline underline-offset-2"
+                >
+                  github.com/settings/tokens
+                </a>{' '}
+                with scopes: <code className="text-amber-300 text-xs">repo</code>,{' '}
+                <code className="text-amber-300 text-xs">webhook (read &amp; write)</code>.
+                Stored encrypted server-side (AES-256-GCM).
+              </p>
+
+              {storageAvailable === false && (
+                <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+                  ⚠ Persistent storage (Vercel KV) is not configured on this deployment.
+                  Auto-bot features are disabled. Manual reviews still work normally.
+                </div>
+              )}
+
+              {maskedPat && (
+                <div className="flex items-center gap-3 mb-4 p-3 rounded-lg bg-gray-950/50 border border-white/5">
+                  <span className="text-amber-400">✓</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-gray-500 mb-0.5">Current PAT</p>
+                    <p className="text-sm text-gray-200 font-mono truncate">{maskedPat}</p>
+                  </div>
+                  <button
+                    onClick={handleClearPat}
+                    disabled={savingPat}
+                    className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50 font-medium px-3 py-1.5 rounded-md hover:bg-red-500/10 transition"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+
+              <label htmlFor="gh-pat" className="block text-xs text-gray-500 mb-2">
+                {maskedPat ? 'Replace PAT' : 'Add your PAT'}
+              </label>
+              <div className="flex gap-3">
+                <div className="relative flex-1">
+                  <input
+                    id="gh-pat"
+                    type={showPat ? 'text' : 'password'}
+                    value={pat}
+                    onChange={(e) => setPat(e.target.value)}
+                    placeholder="github_pat_... or ghp_..."
+                    disabled={storageAvailable === false}
+                    className="w-full px-4 py-3 pr-10 bg-gray-800/50 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 text-sm font-mono disabled:opacity-50"
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPat((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-500 hover:text-gray-300"
+                    aria-label={showPat ? 'Hide PAT' : 'Show PAT'}
+                  >
+                    {showPat ? '🙈' : '👁'}
+                  </button>
+                </div>
+                <button
+                  onClick={handleSavePat}
+                  disabled={savingPat || !pat.trim() || storageAvailable === false}
+                  className="px-5 py-3 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all text-sm shadow-lg shadow-amber-500/20 disabled:shadow-none"
+                >
+                  {savingPat ? 'Saving...' : 'Save PAT'}
+                </button>
+              </div>
+
+              {patMessage && (
+                <div className={`mt-3 flex items-start gap-2 text-sm ${
+                  patMessage.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  <span aria-hidden="true">{patMessage.type === 'success' ? '✓' : '⚠'}</span>
+                  <span>{patMessage.text}</span>
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* Context cache stats — proof of caching working */}
           {cacheStats && (
             <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
@@ -364,11 +521,11 @@ export default function SettingsPage() {
               </li>
               <li className="flex gap-2">
                 <span className="text-blue-400">•</span>
-                Webhook and cron reviews always use the server default keys.
+                Auto-bot webhooks fire with <em>your</em> PAT + Gemini key (or server default if you don&apos;t set them).
               </li>
               <li className="flex gap-2">
                 <span className="text-blue-400">•</span>
-                No databases — sessions live in JWTs, preferences in localStorage, keys in iron-session cookies.
+                Sessions live in JWTs, preferences in localStorage, secrets encrypted in Vercel KV.
               </li>
             </ul>
           </div>
