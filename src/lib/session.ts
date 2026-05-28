@@ -11,7 +11,7 @@ export interface UserKeys {
 }
 
 const SESSION_OPTIONS = {
-  password: process.env.NEXTAUTH_SECRET || 'fallback-dev-secret-that-is-at-least-32-chars-long!!',
+  password: process.env.NEXTAUTH_SECRET || process.env.AUTH_SECRET || 'fallback-dev-secret-that-is-at-least-32-chars-long!!',
   cookieName: 'pr-sentinel-keys',
   cookieOptions: {
     secure: process.env.NODE_ENV === 'production',
