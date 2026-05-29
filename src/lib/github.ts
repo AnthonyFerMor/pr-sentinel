@@ -231,6 +231,81 @@ export async function findLatestReviewComment(
 }
 
 /**
+ * Busca el último review SUBMISSION de PR Sentinel (modo inline). Los reviews
+ * inline se postean con `pulls.createReview`, así que NO aparecen en
+ * `issues.listComments` — viven en `pulls.listReviews`. Sin esto, el bot no
+ * "ve" sus propios reviews inline previos y crearía duplicados al re-revisar.
+ */
+export async function findLatestReviewSubmission(
+  pr: PRInfo,
+  githubToken?: string,
+): Promise<{ reviewId: number; htmlUrl: string; body: string; marker: ReviewMarker } | null> {
+  const octokit = getOctokit(githubToken);
+
+  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
+    owner: pr.owner,
+    repo: pr.repo,
+    pull_number: pr.pullNumber,
+    per_page: 100,
+  });
+
+  let latest: { reviewId: number; htmlUrl: string; body: string; marker: ReviewMarker } | null = null;
+  for (const review of reviews) {
+    const body = review.body ?? '';
+    const marker = parseReviewMarker(body);
+    if (marker) {
+      latest = { reviewId: review.id, htmlUrl: review.html_url ?? '', body, marker };
+    }
+  }
+  return latest;
+}
+
+/**
+ * Encuentra el review previo de PR Sentinel en CUALQUIER modo (comentario o
+ * inline) y devuelve el más reciente. Es la fuente única de verdad para
+ * idempotencia, contexto y dedup. `kind` indica de dónde vino para que el
+ * caller decida si puede actualizar in-place (comentario) o no (inline).
+ */
+export async function findLatestSentinelReview(
+  pr: PRInfo,
+  githubToken?: string,
+): Promise<{
+  kind: 'comment' | 'inline';
+  id: number;
+  htmlUrl: string;
+  body: string;
+  marker: ReviewMarker;
+} | null> {
+  const [comment, submission] = await Promise.all([
+    findLatestReviewComment(pr, githubToken),
+    findLatestReviewSubmission(pr, githubToken),
+  ]);
+
+  if (!comment && !submission) return null;
+
+  // Prefer the most recently generated (marker.generatedAt is an ISO string).
+  const commentTime = comment ? Date.parse(comment.marker.generatedAt) : -Infinity;
+  const submissionTime = submission ? Date.parse(submission.marker.generatedAt) : -Infinity;
+
+  if (submission && submissionTime >= commentTime) {
+    return {
+      kind: 'inline',
+      id: submission.reviewId,
+      htmlUrl: submission.htmlUrl,
+      body: submission.body,
+      marker: submission.marker,
+    };
+  }
+  return {
+    kind: 'comment',
+    id: comment!.commentId,
+    htmlUrl: comment!.htmlUrl,
+    body: comment!.body,
+    marker: comment!.marker,
+  };
+}
+
+/**
  * Actualiza (PATCH) un comentario existente con el nuevo review markdown.
  */
 export async function updateReviewComment(
@@ -249,6 +324,26 @@ export async function updateReviewComment(
   });
 
   return { commentUrl: data.html_url };
+}
+
+// Cache the authenticated login per token so the webhook can recognize the
+// bot's OWN comments even in multi-tenant mode (comments posted under a user's
+// PAT, not a fixed "pr-sentinel[bot]" name). Prevents self-reply loops/dupes.
+const authLoginCache = new Map<string, string>();
+
+export async function getAuthenticatedLogin(githubToken?: string): Promise<string | null> {
+  const key = githubToken ?? '__env__';
+  const cached = authLoginCache.get(key);
+  if (cached) return cached;
+  try {
+    const octokit = getOctokit(githubToken);
+    const { data } = await octokit.rest.users.getAuthenticated();
+    const login = data.login?.toLowerCase() ?? null;
+    if (login) authLoginCache.set(key, login);
+    return login;
+  } catch {
+    return null;
+  }
 }
 
 export async function listAccessibleRepositories(githubToken?: string): Promise<RepositorySummary[]> {

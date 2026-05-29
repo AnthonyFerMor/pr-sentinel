@@ -394,6 +394,18 @@ export default function ReviewStream({
               </div>
             </div>
 
+            {/* Partial review banner */}
+            {review.metadata.partial && (
+              <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-sm text-amber-200 flex items-start gap-2" role="status">
+                <span aria-hidden="true">⏱️</span>
+                <span>
+                  <strong className="font-semibold">Partial review</strong> — analyzed{' '}
+                  {review.metadata.chunksProcessed}/{review.metadata.chunksPlanned} chunks to stay within the
+                  time limit. Re-run to cover the rest, switch to Lite mode, or split this PR for full coverage.
+                </span>
+              </div>
+            )}
+
             {/* Findings summary */}
             <FindingsSummary review={review} />
 

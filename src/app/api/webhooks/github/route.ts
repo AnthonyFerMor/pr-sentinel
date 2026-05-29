@@ -15,6 +15,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runReview } from '@/lib/run-review';
 import { handleCommentEvent } from '@/lib/conversational';
+import { getAuthenticatedLogin } from '@/lib/github';
 import { parsePRUrl } from '@/lib/parser';
 import { getRepoOwner, getUserConfig, ReviewStyle } from '@/lib/storage';
 
@@ -187,6 +188,13 @@ function handleIssueComment(payload: IssueCommentPayload) {
   after(async () => {
     try {
       const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
+      // Defense-in-depth: ignore the bot's OWN comments even when posted under
+      // a user's PAT (dynamic identity, not a fixed bot name).
+      const selfLogin = await getAuthenticatedLogin(creds.githubToken);
+      if (selfLogin && comment.user!.login!.toLowerCase() === selfLogin) {
+        console.log('[webhook] ignoring own issue_comment (dynamic identity).');
+        return;
+      }
       const result = await handleCommentEvent(
         prInfo,
         {
@@ -245,6 +253,11 @@ function handleReviewComment(payload: ReviewCommentPayload) {
   after(async () => {
     try {
       const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
+      const selfLogin = await getAuthenticatedLogin(creds.githubToken);
+      if (selfLogin && comment.user!.login!.toLowerCase() === selfLogin) {
+        console.log('[webhook] ignoring own review_comment (dynamic identity).');
+        return;
+      }
       const result = await handleCommentEvent(
         prInfo,
         {

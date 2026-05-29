@@ -17,13 +17,16 @@ import {
   postReviewComment,
   postInlineReview,
   findLatestReviewComment,
+  findLatestSentinelReview,
   updateReviewComment,
 } from './github';
 import { processDiff, getChunkingSummary } from './chunking';
 import { analyzeChunk, scoutHotspots, getPrimaryModelName } from './gemini';
 import { formatReview, formatInlineComment, formatInlineReviewBody, Hotspot } from './prompt';
 import { buildValidLineMap, partitionFindings } from './patch-lines';
-import { resolveActiveSkills } from './skills';
+import { resolveActiveSkills, Skill } from './skills';
+import { diffReviews } from './review-diff';
+import type { ProcessedDiff, ReviewFinding } from './types';
 import { calculateRiskScore } from './risk-score';
 import { recordReview, pushRecentReview } from './storage';
 import { ReviewResult, StreamEvent, PRInfo, DiffFile, PRMetadata } from './types';
@@ -291,6 +294,102 @@ function severityWeight(severity: string): number {
   }
 }
 
+// ── Budget planning (never-fail core) ──────────────────────────────────────
+// A single Gemini chunk on a serverless function with a hard wall-clock limit
+// (Vercel hobby = 60s) can blow the budget and get the whole function killed
+// mid-stream. To guarantee we ALWAYS return a (possibly partial) review, we:
+//   1. Size how many chunks can realistically finish within the deadline.
+//   2. Lower the thinking budget when we're forced to truncate a large PR.
+// Observed: a small full-mode review takes ~50s; lite is faster (~26s).
+const FULL_CHUNK_MS = Number.parseInt(process.env.FULL_CHUNK_MS ?? '48000', 10);
+const LITE_CHUNK_MS = Number.parseInt(process.env.LITE_CHUNK_MS ?? '26000', 10);
+
+interface BudgetPlan {
+  maxChunks: number;
+  thinkingBudget: number | undefined; // undefined = model default
+  skills: Skill[];
+  note?: string;
+}
+
+function computeBudgetPlan(opts: {
+  processedDiff: ProcessedDiff;
+  mode: ReviewMode;
+  softDeadlineMs: number;
+  requestedSkills: Skill[];
+}): BudgetPlan {
+  const { processedDiff, mode, softDeadlineMs, requestedSkills } = opts;
+  const isLite = mode === 'lite';
+  const perChunkMs = isLite ? LITE_CHUNK_MS : FULL_CHUNK_MS;
+  const totalChunks = Math.max(1, processedDiff.chunks.length);
+
+  // How many chunks can we realistically finish within the deadline? Always >= 1.
+  const fitChunks = Math.max(1, Math.floor(softDeadlineMs / perChunkMs));
+  const liteCap = isLite ? 2 : Number.POSITIVE_INFINITY;
+  const maxChunks = Math.min(totalChunks, fitChunks, liteCap);
+
+  let thinkingBudget: number | undefined = isLite ? 1024 : undefined;
+
+  // Truncating = the PR is bigger than what fits. Lower reasoning cost on the
+  // single chunk we do run so it reliably completes inside the budget.
+  const truncating = maxChunks < totalChunks;
+  if (truncating && !isLite) thinkingBudget = 4096;
+
+  let note: string | undefined;
+  if (isLite) {
+    note = '⚡ Lite mode: reduced thinking budget, fewer chunks, security + bugs only.';
+  } else if (truncating) {
+    note = `📐 Large PR detected: analyzing the ${maxChunks} highest-priority chunk(s) of ${totalChunks} to stay within the time budget. Re-run or use Lite mode for the rest.`;
+  }
+
+  return { maxChunks, thinkingBudget, skills: requestedSkills, note };
+}
+
+/**
+ * Consume a Gemini text stream but never block past `deadlineAt`. If the
+ * deadline hits mid-stream we stop reading, tear down the underlying request,
+ * and report `timedOut` so the caller can return a graceful partial result
+ * instead of letting Vercel kill the whole function.
+ */
+async function consumeStreamWithDeadline(
+  stream: AsyncIterable<{ text: string }>,
+  deadlineAt: number,
+  onText: (text: string) => void,
+): Promise<{ raw: string; timedOut: boolean }> {
+  const iterator = stream[Symbol.asyncIterator]();
+  let raw = '';
+  let timedOut = false;
+  try {
+    while (true) {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) {
+        timedOut = true;
+        break;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutP = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), remaining);
+      });
+      const result = await Promise.race([iterator.next(), timeoutP]);
+      if (timer) clearTimeout(timer);
+      if (result === 'timeout') {
+        timedOut = true;
+        break;
+      }
+      if (result.done) break;
+      raw += result.value.text;
+      onText(result.value.text);
+    }
+  } finally {
+    // Best-effort teardown of the underlying Gemini stream.
+    try {
+      await iterator.return?.();
+    } catch {
+      /* ignore */
+    }
+  }
+  return { raw, timedOut };
+}
+
 /**
  * Ejecuta el review completo de un PR de principio a fin.
  * Lanza si el parseo/análisis falla irrecuperablemente; los errores de
@@ -303,18 +402,16 @@ export async function runReview(
   const startTime = Date.now();
   const emit = options.onEvent ?? (() => {});
   const updateExisting = options.updateExisting ?? false;
-  const isLite = options.mode === 'lite';
+  const mode: ReviewMode = options.mode === 'lite' ? 'lite' : 'full';
+  const isLite = mode === 'lite';
   const liteSkills = ['security', 'bugs'];
-  const activeSkills = isLite
+  // Skills the user requested — used for diff prioritization and analysis.
+  // The budget plan (computed after processDiff) may keep or trim these.
+  const requestedSkills = isLite
     ? resolveActiveSkills(liteSkills)
     : resolveActiveSkills(options.skills);
-  const thinkingBudgetOverride = isLite ? 1024 : undefined;
-  const maxChunksOverride = isLite ? 2 : undefined;
+  const softDeadlineMs = options.softDeadlineMs ?? 55 * 1000;
   const { geminiApiKey, githubToken } = options;
-
-  if (isLite) {
-    emit({ type: 'status', message: '⚡ Lite mode: reduced thinking budget, fewer chunks, security + bugs only.' });
-  }
 
   // 1. Parse URL
   emit({ type: 'status', message: '🔗 Parsing PR URL...' });
@@ -327,18 +424,25 @@ export async function runReview(
   emit({ type: 'metadata', data: metadata });
   emit({ type: 'status', message: `✅ "${metadata.title}" by ${metadata.author}` });
 
-  // Fetch the previous review comment once — used for idempotency check AND context.
-  const previousComment = await findLatestReviewComment(prInfo, githubToken);
+  // Fetch the previous review once — across BOTH modes (issue comment OR inline
+  // review submission). Used for idempotency, context, and dedup so the bot
+  // never posts a duplicate review.
+  const previousReview = await findLatestSentinelReview(prInfo, githubToken);
 
-  if (options.skipIfReviewed && previousComment?.marker.headSha === metadata.headSha) {
+  if (options.skipIfReviewed && previousReview?.marker.headSha === metadata.headSha) {
     emit({
       type: 'status',
       message: `⏭️ Already reviewed at head ${metadata.headSha.slice(0, 8)}. Skipping.`,
     });
-    return { review: null, skipped: true, commentUrl: previousComment.htmlUrl };
+    return { review: null, skipped: true, commentUrl: previousReview.htmlUrl };
   }
 
-  const previousReviewBody = previousComment?.body;
+  const previousReviewBody = previousReview?.body;
+  // Dedup: if a prior Sentinel review exists, evolve a single comment instead
+  // of stacking a new one. (Manual UI runs rely on this; webhooks already set
+  // updateExisting.) Inline can't be patched in place, so re-runs fall to the
+  // comment-update path in publishReview.
+  const hasPriorReview = !!previousReview;
 
   // 3. Fetch files
   emit({ type: 'status', message: '📂 Fetching changed files...' });
@@ -350,7 +454,7 @@ export async function runReview(
 
   // 4. Process diff
   emit({ type: 'status', message: '🔧 Processing diff...' });
-  const processedDiff = processDiff(files, activeSkills.map((s) => s.id));
+  const processedDiff = processDiff(files, requestedSkills.map((s) => s.id));
   emit({ type: 'status', message: getChunkingSummary(processedDiff) });
 
   if (processedDiff.skippedFiles.length > 0) {
@@ -403,6 +507,13 @@ export async function runReview(
     return { review, skipped: false, ...published };
   }
 
+  // 4c. Budget plan: decide how many chunks / how much reasoning fits the
+  // deadline so the run NEVER gets killed mid-stream. Applies to all modes.
+  const budget = computeBudgetPlan({ processedDiff, mode, softDeadlineMs, requestedSkills });
+  const activeSkills = budget.skills;
+  const thinkingBudgetOverride = budget.thinkingBudget;
+  if (budget.note) emit({ type: 'status', message: budget.note });
+
   // 5. Analyze with Gemini
   emit({
     type: 'status',
@@ -429,17 +540,15 @@ export async function runReview(
   let cacheInfo = { cacheHit: false, cachedTokens: 0, totalTokens: 0 };
   let merged: Omit<ReviewResult, 'metadata'> | null = null;
   let partial = false;
-  // In lite mode, cap chunks to reduce token usage.
-  const effectiveChunks = maxChunksOverride
-    ? processedDiff.chunks.slice(0, maxChunksOverride)
-    : processedDiff.chunks;
+  // Cap chunks to what the budget plan says fits the deadline.
+  const effectiveChunks = processedDiff.chunks.slice(0, budget.maxChunks);
   const plannedChunks = effectiveChunks.length;
-  const softDeadlineMs = options.softDeadlineMs ?? 55 * 1000;
+  const deadlineAt = startTime + softDeadlineMs;
   let processedChunks = 0;
   const modelsUsed = new Set<string>();
 
   for (const chunk of effectiveChunks) {
-    if (Date.now() - startTime > softDeadlineMs) {
+    if (Date.now() > deadlineAt) {
       partial = true;
       emit({
         type: 'status',
@@ -471,10 +580,21 @@ export async function runReview(
       }
     );
 
-    let chunkRaw = '';
-    for await (const geminiChunk of geminiStream) {
-      chunkRaw += geminiChunk.text;
-      emit({ type: 'chunk', content: geminiChunk.text });
+    const { raw: chunkRaw, timedOut } = await consumeStreamWithDeadline(
+      geminiStream,
+      deadlineAt,
+      (text) => emit({ type: 'chunk', content: text }),
+    );
+
+    if (timedOut) {
+      // The model didn't finish this chunk in time. Stop here and keep
+      // whatever earlier chunks already produced (graceful partial).
+      partial = true;
+      emit({
+        type: 'status',
+        message: `⏱️ Time budget reached mid-analysis. Returning a partial review (${processedChunks}/${plannedChunks} chunks completed).`,
+      });
+      break;
     }
 
     try {
@@ -508,6 +628,17 @@ export async function runReview(
   // 6. Build final result
   const processingTime = Date.now() - startTime;
   if (!merged) {
+    // Never-fail: if we ran out of time before the first chunk produced a
+    // usable result, surface a clear, actionable message instead of throwing
+    // (which the SSE would render as a generic crash).
+    if (partial) {
+      emit({
+        type: 'error',
+        message:
+          'This PR is too large to finish even one analysis pass within the time limit. Try Lite mode (security + bugs only) or review a smaller PR / fewer files.',
+      });
+      return { review: null, skipped: false };
+    }
     throw new Error('No valid review response from AI model. All chunks failed to parse.');
   }
 
@@ -530,13 +661,50 @@ export async function runReview(
     review.summary = review.summary ? review.summary + suffix : suffix.trim();
   }
 
+  // 6b. If a prior review exists with a findings fingerprint, fold a compact
+  // re-verification summary INTO this review's summary (single evolving
+  // comment — no separate stacking comment).
+  if (hasPriorReview && previousReview?.marker.findings?.length) {
+    try {
+      const prevFindings = previousReview.marker.findings;
+      const oldShape: ReviewResult = {
+        summary: '',
+        overallRiskLevel: 'low',
+        categories: {
+          bugs: prevFindings.map((f) => ({
+            title: f.title,
+            severity: f.severity as ReviewFinding['severity'],
+            file: f.file,
+            description: '',
+            suggestion: '',
+            cweId: f.cweId,
+          })),
+          security: [],
+          performance: [],
+          codeQuality: [],
+          suggestions: [],
+        },
+        positiveAspects: [],
+        metadata: review.metadata,
+      };
+      const diff = diffReviews(oldShape, review);
+      const line = `🔄 Re-review vs previous: ✅ ${diff.fixed.length} fixed · ⚠️ ${diff.persisting.length} still present · 🆕 ${diff.newFindings.length} new.`;
+      review.summary = review.summary ? `${line}\n\n${review.summary}` : line;
+    } catch (err) {
+      console.warn('[run-review] re-verification fold-in failed (non-fatal):', err);
+    }
+  }
+
   // 7. Publish to GitHub (mandatory deliverable)
+  // Dedup: update in place whenever a prior review exists (even a manual re-run
+  // from the UI), so we never stack duplicate reviews.
+  const effectiveUpdateExisting = updateExisting || hasPriorReview;
   const inlineMode = options.inlineMode ?? true;
   const published = await publishReview(
     prInfo,
     review,
     emit,
-    updateExisting,
+    effectiveUpdateExisting,
     githubToken,
     options.reviewStyle,
     {
@@ -551,46 +719,8 @@ export async function runReview(
     },
   );
 
-  // 8. Post re-verification summary when updating an existing review
-  if (updateExisting && published.commentUrl && previousReviewBody) {
-    try {
-      const totalFindings =
-        review.categories.security.length +
-        review.categories.bugs.length +
-        review.categories.performance.length +
-        review.categories.codeQuality.length +
-        review.categories.suggestions.length;
-
-      const critCount = review.categories.security.filter((f) => f.severity === 'critical').length +
-        review.categories.bugs.filter((f) => f.severity === 'critical').length;
-      const highCount = review.categories.security.filter((f) => f.severity === 'high').length +
-        review.categories.bugs.filter((f) => f.severity === 'high').length;
-
-      const severity = critCount > 0 ? `${critCount} critical` : highCount > 0 ? `${highCount} high` : 'none critical/high';
-
-      // Caveman re-verification = one line. Full = expanded block.
-      const summary = options.reviewStyle === 'caveman'
-        ? `🔄 Re-verified at \`${metadata.headSha.slice(0, 8)}\` → ${totalFindings} findings (${severity}). Main review updated above.`
-        : [
-            '## 🔄 Re-verification Summary\n',
-            `PR Sentinel re-analyzed this PR after new commits (head: \`${metadata.headSha.slice(0, 8)}\`). The main review comment above has been **updated** with the latest analysis.\n`,
-            `**Current findings**: ${totalFindings} total (${severity})`,
-            `- 🔒 Security: ${review.categories.security.length}`,
-            `- 🐛 Bugs: ${review.categories.bugs.length}`,
-            `- ⚡ Performance: ${review.categories.performance.length}`,
-            `- 🧹 Code quality: ${review.categories.codeQuality.length}`,
-            `- 💡 Suggestions: ${review.categories.suggestions.length}`,
-            '',
-            '---\n*🤖 PR Sentinel — automated re-verification*',
-          ].join('\n');
-
-      await postReviewComment(prInfo, summary, githubToken);
-      emit({ type: 'status', message: '📊 Re-verification summary posted.' });
-    } catch (err) {
-      // Non-fatal: the main review was already posted/updated successfully.
-      console.error('[run-review] Failed to post re-verification summary:', err);
-    }
-  }
+  // Re-verification is now folded into the single evolving comment (step 6b),
+  // so we no longer post a separate stacking comment here.
 
   // 9. Emit complete FIRST so the client gets results even if stats save is slow.
   emit({ type: 'complete', data: review });

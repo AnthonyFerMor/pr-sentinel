@@ -1,14 +1,26 @@
 export const REVIEW_MARKER_NAME = 'pr-sentinel-review';
 
+/** Compact fingerprint of a finding — enough to diff fixed/persisting/new. */
+export interface MarkerFinding {
+  file: string;
+  title: string;
+  severity: string;
+  cweId?: string;
+}
+
 export interface ReviewMarker {
   version: 1;
   headSha: string;
   prUrl: string;
   generatedAt: string;
   model: string;
+  /** Optional fingerprint of the findings in this review (added later; older comments omit it). */
+  findings?: MarkerFinding[];
 }
 
-export function buildReviewMarker(marker: Omit<ReviewMarker, 'version' | 'generatedAt'>): string {
+export function buildReviewMarker(
+  marker: Omit<ReviewMarker, 'version' | 'generatedAt'>,
+): string {
   const payload: ReviewMarker = {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -19,7 +31,9 @@ export function buildReviewMarker(marker: Omit<ReviewMarker, 'version' | 'genera
 }
 
 export function parseReviewMarker(body: string): ReviewMarker | null {
-  const match = body.match(/<!--\s*pr-sentinel-review\s+({[\s\S]*?})\s*-->/);
+  // Greedy {...} so nested objects (the findings array) are captured fully.
+  // The JSON never contains "-->", so this stays bounded to the comment.
+  const match = body.match(/<!--\s*pr-sentinel-review\s+(\{[\s\S]*\})\s*-->/);
   if (!match) return null;
 
   try {

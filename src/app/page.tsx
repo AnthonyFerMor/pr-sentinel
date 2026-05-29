@@ -6,6 +6,7 @@ import { useSession, signIn } from 'next-auth/react';
 import { useReviewStream } from '@/hooks/useReviewStream';
 import ReviewForm from '@/components/ReviewForm';
 import ReviewStream from '@/components/ReviewStream';
+import PreflightPanel, { PreflightData } from '@/components/PreflightPanel';
 import SkillSelector, { loadStoredSkills } from '@/components/SkillSelector';
 import OnboardingBanner from '@/components/OnboardingBanner';
 import HowItWorks from '@/components/HowItWorks';
@@ -33,6 +34,8 @@ function ReviewApp() {
   const lastPrUrl = useRef<string>('');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [reviewMode, setReviewMode] = useState<'full' | 'lite'>('full');
+  const [preflight, setPreflight] = useState<PreflightData | null>(null);
+  const [estimating, setEstimating] = useState(false);
 
   useEffect(() => {
     setSelectedSkills(loadStoredSkills());
@@ -43,9 +46,45 @@ function ReviewApp() {
     setReviewMode(storedMode);
   }, []);
 
+  // Kick off the actual review (optionally overriding mode/skills).
+  const runReview = (prUrl: string, override?: { mode?: 'full' | 'lite' }) => {
+    setPreflight(null);
+    const mode = override?.mode ?? reviewMode;
+    if (override?.mode) setReviewMode(override.mode);
+    void startReview(prUrl, selectedSkills, mode);
+  };
+
+  // Pre-flight: cheaply estimate size BEFORE spending tokens. Large PRs or an
+  // already-reviewed commit show a panel so the user picks scope; otherwise we
+  // proceed straight to the review. The estimate never blocks the user — on any
+  // error we just run.
   const handleSubmit = async (prUrl: string) => {
     lastPrUrl.current = prUrl;
-    await startReview(prUrl, selectedSkills, reviewMode);
+    setPreflight(null);
+    setEstimating(true);
+    try {
+      const res = await fetch('/api/review/estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prUrl, skills: selectedSkills, mode: reviewMode }),
+      });
+      const data = await res.json();
+      setEstimating(false);
+      if (!res.ok) {
+        runReview(prUrl);
+        return;
+      }
+      const needsChoice =
+        data.alreadyReviewed || !data.fitsFull || data.sizeCategory === 'large' || data.sizeCategory === 'huge';
+      if (needsChoice) {
+        setPreflight(data as PreflightData);
+        return;
+      }
+      runReview(prUrl);
+    } catch {
+      setEstimating(false);
+      runReview(prUrl);
+    }
   };
 
   const setMode = (next: 'full' | 'lite') => {
@@ -138,7 +177,24 @@ function ReviewApp() {
                 Paste a GitHub Pull Request URL
               </h3>
             </div>
-            <ReviewForm onSubmit={handleSubmit} isLoading={isLoading} onReset={reset} />
+            <ReviewForm onSubmit={handleSubmit} isLoading={isLoading || estimating} onReset={reset} />
+            {estimating && (
+              <p className="mt-3 text-sm text-gray-400 flex items-center gap-2" role="status">
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Checking PR size…
+              </p>
+            )}
+            {preflight && (
+              <PreflightPanel
+                data={preflight}
+                onRunRecommended={() => runReview(lastPrUrl.current, { mode: preflight.recommendedMode })}
+                onRunAnyway={() => runReview(lastPrUrl.current)}
+                onCancel={() => setPreflight(null)}
+              />
+            )}
           </section>
 
           {/* Step 2: Configure */}

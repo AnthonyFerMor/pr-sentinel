@@ -4,9 +4,29 @@
 
 import { Type } from '@google/genai';
 import { PRMetadata, DiffFile, ReviewResult } from './types';
-import { buildReviewMarker } from './review-marker';
+import { buildReviewMarker, MarkerFinding } from './review-marker';
 import { Skill, resolveActiveSkills } from './skills';
 import { calculateRiskScore, formatRiskScoreBlock } from './risk-score';
+
+/**
+ * Compact fingerprint of all findings — embedded in the review marker so a
+ * later re-review can diff fixed/persisting/new without parsing markdown.
+ */
+function fingerprintFindings(review: ReviewResult): MarkerFinding[] {
+  const all = [
+    ...review.categories.security,
+    ...review.categories.bugs,
+    ...review.categories.performance,
+    ...review.categories.codeQuality,
+    ...review.categories.suggestions,
+  ];
+  return all.map((f) => ({
+    file: f.file,
+    title: f.title,
+    severity: f.severity,
+    ...(f.cweId ? { cweId: f.cweId } : {}),
+  }));
+}
 
 /**
  * System prompt para el agente de revisión de PRs.
@@ -511,6 +531,7 @@ export function formatReviewAsMarkdown(review: ReviewResult): string {
           headSha: review.metadata.reviewedHeadSha,
           prUrl: review.metadata.sourcePrUrl,
           model: review.metadata.modelUsed,
+          findings: fingerprintFindings(review),
         }) + '\n'
       : '';
 
@@ -607,6 +628,7 @@ export function formatReviewAsCaveman(review: ReviewResult): string {
           headSha: review.metadata.reviewedHeadSha,
           prUrl: review.metadata.sourcePrUrl,
           model: review.metadata.modelUsed,
+          findings: fingerprintFindings(review),
         }) + '\n'
       : '';
 
@@ -759,6 +781,7 @@ export function formatInlineReviewBody(
           headSha: review.metadata.reviewedHeadSha,
           prUrl: review.metadata.sourcePrUrl,
           model: review.metadata.modelUsed,
+          findings: fingerprintFindings(review),
         }) + '\n'
       : '';
 
