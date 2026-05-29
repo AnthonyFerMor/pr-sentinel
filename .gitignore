@@ -45,3 +45,7 @@ next-env.d.ts
 .next-dev*.log
 .next-dev*.err
 .npm-test*
+
+# Claude session files & stray test artifacts
+.claude/
+/pr1.json

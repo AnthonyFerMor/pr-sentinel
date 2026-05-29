@@ -32,11 +32,12 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const { prUrl, skills: skillIds, mode, reviewStyle: bodyStyle } = (body ?? {}) as {
+  const { prUrl, skills: skillIds, mode, reviewStyle: bodyStyle, inlineMode: bodyInline } = (body ?? {}) as {
     prUrl?: unknown;
     skills?: unknown;
     mode?: unknown;
     reviewStyle?: unknown;
+    inlineMode?: unknown;
   };
 
   if (!prUrl || typeof prUrl !== 'string') {
@@ -57,14 +58,17 @@ export async function POST(request: NextRequest) {
   const githubToken = session?.accessToken;
   const geminiApiKey = userKeys.geminiApiKey;
 
-  // Resolve reviewStyle: body override (ad-hoc) > user KV preference > default 'full'.
+  // Resolve reviewStyle + inlineMode: body override (ad-hoc) > user KV preference > default.
   let reviewStyle: ReviewStyle | undefined =
     typeof bodyStyle === 'string' && VALID_STYLES.includes(bodyStyle as ReviewStyle)
       ? (bodyStyle as ReviewStyle)
       : undefined;
-  if (!reviewStyle && session?.user?.id) {
+  let inlineMode: boolean | undefined =
+    typeof bodyInline === 'boolean' ? bodyInline : undefined;
+  if ((!reviewStyle || inlineMode === undefined) && session?.user?.id) {
     const cfg = await getUserConfig(session.user.id);
-    reviewStyle = cfg?.reviewStyle;
+    if (!reviewStyle) reviewStyle = cfg?.reviewStyle;
+    if (inlineMode === undefined) inlineMode = cfg?.inlineMode;
   }
 
   const encoder = new TextEncoder();
@@ -83,6 +87,8 @@ export async function POST(request: NextRequest) {
           githubToken,
           mode: reviewMode,
           reviewStyle,
+          inlineMode: inlineMode ?? true,
+          userId: session?.user?.id,
         });
       } catch (error) {
         const msg =

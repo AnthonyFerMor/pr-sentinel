@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import Header from '@/components/Header';
+import Aurora from '@/components/Aurora';
 import { PullRequestSummary, RepositorySummary } from '@/lib/types';
 
 type RepoSource = 'github' | 'manual';
@@ -38,14 +40,14 @@ function parseRepoInput(input: string): Pick<RepositorySummary, 'owner' | 'name'
 
 function statusLabel(state: PullRequestSummary['reviewState']) {
   if (state === 'reviewed') return 'Reviewed';
-  if (state === 'needs_update') return 'Updated after review';
+  if (state === 'needs_update') return 'Updated since review';
   return 'Needs review';
 }
 
 function statusClass(state: PullRequestSummary['reviewState']) {
-  if (state === 'reviewed') return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20';
-  if (state === 'needs_update') return 'bg-amber-500/10 text-amber-300 border-amber-500/20';
-  return 'bg-rose-500/10 text-rose-300 border-rose-500/20';
+  if (state === 'reviewed') return 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25';
+  if (state === 'needs_update') return 'bg-amber-500/10 text-amber-300 border-amber-500/25';
+  return 'bg-rose-500/10 text-rose-300 border-rose-500/25';
 }
 
 async function readSseReview(prUrl: string): Promise<string> {
@@ -104,13 +106,11 @@ export default function RepositoriesPage() {
   const [isLoadingRepos, setIsLoadingRepos] = useState(true);
   const inFlight = useRef<Set<string>>(new Set());
 
-  // Auto-bot state (server-side webhook persistence via KV).
   const [autoBotRepos, setAutoBotRepos] = useState<Set<string>>(new Set());
   const [autoBotPending, setAutoBotPending] = useState<Record<string, boolean>>({});
   const [autoBotErrors, setAutoBotErrors] = useState<Record<string, string>>({});
   const [autoBotAvailable, setAutoBotAvailable] = useState<boolean | null>(null);
 
-  // Load enabled repos once on mount.
   useEffect(() => {
     fetch('/api/repos/status')
       .then((r) => r.json())
@@ -126,37 +126,40 @@ export default function RepositoriesPage() {
       .catch(() => setAutoBotAvailable(false));
   }, []);
 
-  const toggleAutoBot = useCallback(async (repo: RepoItem) => {
-    const key = repoKey(repo);
-    const currentlyEnabled = autoBotRepos.has(key);
-    setAutoBotPending((p) => ({ ...p, [key]: true }));
-    setAutoBotErrors((e) => ({ ...e, [key]: '' }));
+  const toggleAutoBot = useCallback(
+    async (repo: RepoItem) => {
+      const key = repoKey(repo);
+      const currentlyEnabled = autoBotRepos.has(key);
+      setAutoBotPending((p) => ({ ...p, [key]: true }));
+      setAutoBotErrors((e) => ({ ...e, [key]: '' }));
 
-    try {
-      const endpoint = currentlyEnabled ? '/api/repos/disable' : '/api/repos/enable';
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ owner: repo.owner, repo: repo.name }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+      try {
+        const endpoint = currentlyEnabled ? '/api/repos/disable' : '/api/repos/enable';
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ owner: repo.owner, repo: repo.name }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
 
-      setAutoBotRepos((prev) => {
-        const next = new Set(prev);
-        if (currentlyEnabled) next.delete(key);
-        else next.add(key);
-        return next;
-      });
-    } catch (err) {
-      setAutoBotErrors((e) => ({
-        ...e,
-        [key]: err instanceof Error ? err.message : 'Failed to toggle auto-bot',
-      }));
-    } finally {
-      setAutoBotPending((p) => ({ ...p, [key]: false }));
-    }
-  }, [autoBotRepos]);
+        setAutoBotRepos((prev) => {
+          const next = new Set(prev);
+          if (currentlyEnabled) next.delete(key);
+          else next.add(key);
+          return next;
+        });
+      } catch (err) {
+        setAutoBotErrors((e) => ({
+          ...e,
+          [key]: err instanceof Error ? err.message : 'Failed to toggle auto-bot',
+        }));
+      } finally {
+        setAutoBotPending((p) => ({ ...p, [key]: false }));
+      }
+    },
+    [autoBotRepos],
+  );
 
   useEffect(() => {
     const storedRepos = JSON.parse(localStorage.getItem(STORAGE_REPOS) ?? '[]') as RepoItem[];
@@ -184,7 +187,7 @@ export default function RepositoriesPage() {
         }));
 
         const merged = [...githubRepos, ...manualRepos].filter(
-          (repo, index, all) => all.findIndex((item) => repoKey(item) === repoKey(repo)) === index
+          (repo, index, all) => all.findIndex((item) => repoKey(item) === repoKey(repo)) === index,
         );
 
         localStorage.setItem(STORAGE_REPOS, JSON.stringify(merged.filter((repo) => repo.source === 'manual')));
@@ -247,16 +250,19 @@ export default function RepositoriesPage() {
     }
   }, []);
 
-  const reviewPendingForRepo = useCallback(async (repo: RepoItem) => {
-    const pulls = await loadPulls(repo);
-    const pending = pulls.filter((pull) => pull.reviewState !== 'reviewed');
+  const reviewPendingForRepo = useCallback(
+    async (repo: RepoItem) => {
+      const pulls = await loadPulls(repo);
+      const pending = pulls.filter((pull) => pull.reviewState !== 'reviewed');
 
-    for (const pull of pending) {
-      await reviewPull(pull);
-    }
+      for (const pull of pending) {
+        await reviewPull(pull);
+      }
 
-    await loadPulls(repo);
-  }, [loadPulls, reviewPull]);
+      await loadPulls(repo);
+    },
+    [loadPulls, reviewPull],
+  );
 
   useEffect(() => {
     void loadRepositories();
@@ -287,8 +293,9 @@ export default function RepositoriesPage() {
       open: pulls.length,
       pending: pulls.filter((pull) => pull.reviewState !== 'reviewed').length,
       monitored: Object.values(monitored).filter(Boolean).length,
+      autobot: autoBotRepos.size,
     };
-  }, [pullsByRepo, monitored]);
+  }, [pullsByRepo, monitored, autoBotRepos]);
 
   const addManualRepo = () => {
     try {
@@ -308,7 +315,7 @@ export default function RepositoriesPage() {
 
       setRepositories((previous) => {
         const merged = [repo, ...previous].filter(
-          (item, index, all) => all.findIndex((candidate) => repoKey(candidate) === repoKey(item)) === index
+          (item, index, all) => all.findIndex((candidate) => repoKey(candidate) === repoKey(item)) === index,
         );
         localStorage.setItem(STORAGE_REPOS, JSON.stringify(merged.filter((item) => item.source === 'manual')));
         return merged;
@@ -326,57 +333,99 @@ export default function RepositoriesPage() {
   return (
     <>
       <Header />
-      <main className="min-h-screen bg-gray-950 text-white">
-        <section className="border-b border-white/5 bg-gray-900/40">
-          <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 md:flex-row md:items-end md:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">Automation Center</p>
-              <h2 className="mt-2 text-3xl font-bold tracking-tight">Repository watchlist</h2>
-              <p className="mt-2 max-w-2xl text-sm text-gray-400">
-                Monitor GitHub repositories, detect open PRs that need a review, and post PR Sentinel comments automatically.
-              </p>
-            </div>
-            <div className="grid grid-cols-3 gap-3 text-center">
-              <Stat label="Monitored" value={String(totals.monitored)} />
-              <Stat label="Open PRs" value={String(totals.open)} />
-              <Stat label="Pending" value={String(totals.pending)} />
+      <main className="relative min-h-screen bg-[var(--surface-0)] text-white overflow-hidden">
+        <Aurora />
+
+        {/* Hero */}
+        <section className="relative z-10 border-b border-white/[0.06]">
+          <div className="mx-auto max-w-6xl px-5 sm:px-6 py-10 sm:py-14">
+            <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between animate-slideUp">
+              <div className="max-w-2xl">
+                <span className="step-pill mb-3">Automation Center</span>
+                <h2 className="mt-3 text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight leading-tight">
+                  Repository{' '}
+                  <span className="bg-gradient-to-r from-violet-300 via-blue-300 to-cyan-300 bg-clip-text text-transparent">
+                    watchlist
+                  </span>
+                </h2>
+                <p className="mt-3 text-base text-gray-400 leading-relaxed">
+                  Monitor GitHub repositories, detect open PRs that need review, and post
+                  PR Sentinel comments automatically.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 stagger">
+                <Stat label="Auto-bot" value={String(totals.autobot)} accent="amber" />
+                <Stat label="Monitored" value={String(totals.monitored)} accent="cyan" />
+                <Stat label="Open PRs" value={String(totals.open)} accent="violet" />
+                <Stat label="Pending" value={String(totals.pending)} accent="rose" />
+              </div>
             </div>
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-4 py-6">
-          <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-gray-900/60 p-4 md:flex-row">
-            <input
-              value={manualInput}
-              onChange={(event) => setManualInput(event.target.value)}
-              placeholder="https://github.com/owner/repo"
-              className="min-h-11 flex-1 rounded-md border border-white/10 bg-gray-950 px-3 text-sm text-white outline-none focus:border-cyan-400/50"
-            />
-            <button
-              type="button"
-              onClick={addManualRepo}
-              className="min-h-11 rounded-md bg-cyan-500 px-4 text-sm font-semibold text-gray-950 hover:bg-cyan-400"
-            >
-              Add public repo
+        <section className="relative z-10 mx-auto max-w-6xl px-5 sm:px-6 py-8">
+          {/* Add repo bar */}
+          <div className="glass-card p-3 flex flex-col gap-2 md:flex-row animate-slideUp" style={{ animationDelay: '0.1s' }}>
+            <div className="relative flex-1">
+              <svg
+                className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+              </svg>
+              <input
+                value={manualInput}
+                onChange={(event) => setManualInput(event.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addManualRepo()}
+                placeholder="https://github.com/owner/repo"
+                className="field-input pl-10 !py-2.5"
+              />
+            </div>
+            <button type="button" onClick={addManualRepo} className="btn-primary !py-2.5 whitespace-nowrap">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Add repo
             </button>
             <button
               type="button"
               onClick={() => void loadRepositories()}
-              className="min-h-11 rounded-md border border-white/10 px-4 text-sm font-semibold text-gray-200 hover:bg-white/5"
+              className="btn-secondary !py-2.5 whitespace-nowrap"
             >
-              Refresh GitHub repos
+              <svg
+                className={`w-4 h-4 ${isLoadingRepos ? 'animate-spin' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Sync from GitHub
             </button>
           </div>
 
           {repoErrors.global && (
-            <p className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
-              {repoErrors.global}
-            </p>
+            <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 p-4 text-sm text-rose-300 animate-fadeIn">
+              <p className="font-semibold mb-1">⚠ Could not load repositories</p>
+              <p className="text-rose-200/80 text-xs leading-relaxed">{repoErrors.global}</p>
+              {repoErrors.global.includes('PAT') || repoErrors.global.includes('configured') ? (
+                <Link href="/settings" className="inline-flex items-center gap-1 mt-2 text-xs text-rose-200 underline underline-offset-2 hover:text-white transition">
+                  Go to Settings →
+                </Link>
+              ) : (
+                <button type="button" onClick={() => void loadRepositories()} className="mt-2 text-xs text-rose-200 underline underline-offset-2 hover:text-white transition">
+                  Try again
+                </button>
+              )}
+            </div>
           )}
 
-          <div className="mt-6 space-y-4">
+          <div className="mt-7 space-y-4">
             {isLoadingRepos && repositories.length === 0 && (
-              <div className="rounded-lg border border-white/10 bg-gray-900/60 p-6 flex items-center gap-3 text-sm text-gray-400">
+              <div className="glass-card p-6 flex items-center gap-3 text-sm text-gray-400">
                 <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -386,94 +435,125 @@ export default function RepositoriesPage() {
             )}
 
             {!isLoadingRepos && repositories.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-white/10 bg-gray-900/40 p-10 text-center">
-                <div className="text-5xl mb-4" aria-hidden="true">📦</div>
-                <h3 className="text-lg font-semibold text-white mb-2">No repositories yet</h3>
-                <p className="text-sm text-gray-400 max-w-md mx-auto mb-6">
-                  Add a public repository above or refresh to load the ones your GitHub account has access to.
-                  Toggle <span className="text-cyan-300">Auto-review</span> on any repo to monitor its open PRs.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void loadRepositories()}
-                  className="inline-flex items-center gap-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 px-4 py-2 text-sm font-semibold text-gray-950"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              <div className="glass-card p-10 text-center animate-fadeIn">
+                <div className="inline-flex w-16 h-16 mb-5 rounded-2xl bg-gradient-to-br from-violet-500/20 to-blue-500/10 border border-white/10 items-center justify-center">
+                  <svg className="w-7 h-7 text-violet-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                   </svg>
-                  Refresh from GitHub
-                </button>
+                </div>
+                <h3 className="text-xl font-semibold text-white mb-2">No repositories found</h3>
+                <p className="text-sm text-gray-400 max-w-md mx-auto mb-2 leading-relaxed">
+                  No repos from your GitHub account were found. You can sync again or paste any
+                  GitHub repo URL you have read access to.
+                </p>
+                <p className="text-xs text-gray-500 max-w-sm mx-auto mb-6 leading-relaxed">
+                  If your repos aren&apos;t showing, make sure you authorized PR Sentinel with the
+                  correct GitHub account. You can also add any public repo by pasting its URL above.
+                </p>
+                <div className="flex flex-wrap gap-3 justify-center">
+                  <button type="button" onClick={() => void loadRepositories()} className="btn-primary">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Sync from GitHub
+                  </button>
+                  <Link href="/" className="btn-secondary">
+                    Review a PR manually →
+                  </Link>
+                </div>
               </div>
             )}
 
-            {repositories.map((repo) => {
+            {repositories.map((repo, idx) => {
               const key = repoKey(repo);
               const pulls = pullsByRepo[key] ?? [];
               const pending = pulls.filter((pull) => pull.reviewState !== 'reviewed');
+              const autobotEnabled = autoBotRepos.has(key);
+              const autobotDisabled = autoBotAvailable === false || repo.source === 'manual';
 
               return (
-                <article key={key} className="rounded-lg border border-white/10 bg-gray-900/60 p-5">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
+                <article
+                  key={key}
+                  className="glass-card glass-card-hover p-5 sm:p-6 animate-slideUp"
+                  style={{ animationDelay: `${0.05 * idx}s` }}
+                >
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
                         <a
                           href={repo.htmlUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-lg font-semibold text-white hover:text-cyan-300"
+                          className="text-lg font-semibold text-white hover:text-cyan-300 transition truncate"
                         >
                           {repo.fullName}
                         </a>
-                        <span className="rounded-full border border-white/10 px-2 py-0.5 text-xs text-gray-400">
-                          {repo.source === 'github' ? 'GitHub access' : 'Manual'}
+                        <span
+                          className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                            repo.source === 'github'
+                              ? 'border-violet-500/25 bg-violet-500/10 text-violet-300'
+                              : 'border-white/10 bg-white/[0.03] text-gray-400'
+                          }`}
+                        >
+                          {repo.source === 'github' ? 'GitHub' : 'Manual'}
                         </span>
                         {repo.private && (
-                          <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">
+                          <span className="rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300">
                             Private
                           </span>
                         )}
+                        {autobotEnabled && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                            <span className="h-1 w-1 rounded-full bg-emerald-400 animate-pulse" />
+                            Auto-bot live
+                          </span>
+                        )}
                       </div>
-                      <p className="mt-1 text-sm text-gray-400">{repo.description ?? 'No description'}</p>
+                      <p className="text-sm text-gray-400 line-clamp-2">
+                        {repo.description ?? 'No description'}
+                      </p>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <label className="flex items-center gap-2 rounded-md border border-white/10 px-3 py-2 text-sm text-gray-300" title="Polls every 60s while this page is open">
+                    <div className="flex flex-wrap items-center gap-2 lg:flex-shrink-0">
+                      {/* Local poll toggle */}
+                      <label
+                        className="group flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] px-3 py-2 text-xs text-gray-300 cursor-pointer transition"
+                        title="Polls every 60s while this tab is open"
+                      >
                         <input
                           type="checkbox"
                           checked={monitored[key] ?? false}
                           onChange={(event) =>
                             setMonitored((previous) => ({ ...previous, [key]: event.target.checked }))
                           }
-                          className="h-4 w-4 accent-cyan-400"
+                          className="h-3.5 w-3.5 accent-cyan-400 cursor-pointer"
                         />
-                        Auto-review
+                        <span className="font-medium">Local poll</span>
                       </label>
+
+                      {/* Auto-bot toggle (server-side webhook) */}
                       <label
-                        className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition ${
-                          autoBotRepos.has(key)
-                            ? 'border-amber-400/40 bg-amber-500/10 text-amber-200'
-                            : 'border-white/10 text-gray-300'
-                        } ${autoBotAvailable === false || repo.source === 'manual' ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                        className={`group flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition ${
+                          autobotEnabled
+                            ? 'border-amber-500/40 bg-gradient-to-br from-amber-500/15 to-orange-500/5 text-amber-200 shadow-sm shadow-amber-500/10'
+                            : 'border-white/10 bg-white/[0.02] text-gray-300 hover:bg-white/[0.04]'
+                        } ${autobotDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                         title={
                           repo.source === 'manual'
                             ? 'Auto-bot is only available for GitHub-linked repos.'
                             : autoBotAvailable === false
                               ? 'KV not configured on this deployment.'
-                              : 'Install a webhook on this repo. Reviews fire automatically on every new PR / commit, even when you are offline.'
+                              : 'Install a webhook. Reviews fire on every new PR / commit, even offline.'
                         }
                       >
                         <input
                           type="checkbox"
-                          checked={autoBotRepos.has(key)}
-                          disabled={
-                            autoBotPending[key] ||
-                            autoBotAvailable === false ||
-                            repo.source === 'manual'
-                          }
+                          checked={autobotEnabled}
+                          disabled={autoBotPending[key] || autobotDisabled}
                           onChange={() => void toggleAutoBot(repo)}
-                          className="h-4 w-4 accent-amber-400"
+                          className="h-3.5 w-3.5 accent-amber-400 cursor-pointer"
                         />
-                        <span className="flex items-center gap-1.5">
+                        <span className="flex items-center gap-1.5 font-semibold">
                           🤖 Auto-bot
                           {autoBotPending[key] && (
                             <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" aria-hidden="true">
@@ -483,10 +563,11 @@ export default function RepositoriesPage() {
                           )}
                         </span>
                       </label>
+
                       <button
                         type="button"
                         onClick={() => void loadPulls(repo)}
-                        className="rounded-md border border-white/10 px-3 py-2 text-sm text-gray-300 hover:bg-white/5"
+                        className="btn-secondary !text-xs !py-2 !px-3"
                       >
                         Check PRs
                       </button>
@@ -494,53 +575,72 @@ export default function RepositoriesPage() {
                         type="button"
                         onClick={() => void reviewPendingForRepo(repo)}
                         disabled={pending.length === 0 && pulls.length > 0}
-                        className="rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-gray-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 transition shadow-lg shadow-emerald-500/20 disabled:shadow-none"
                       >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
                         Review pending
                       </button>
                     </div>
                   </div>
 
                   {repoErrors[key] && (
-                    <p className="mt-4 rounded-md border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
+                    <p className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 p-3 text-xs text-rose-300">
                       {repoErrors[key]}
                     </p>
                   )}
 
                   {autoBotErrors[key] && (
-                    <p className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-200">
-                      🤖 Auto-bot: {autoBotErrors[key]}
-                    </p>
+                    <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-200">
+                      <p>🤖 Auto-bot: {autoBotErrors[key]}</p>
+                      {(autoBotErrors[key].includes('PAT') || autoBotErrors[key].includes('Settings')) && (
+                        <Link href="/settings" className="inline-flex items-center gap-1 mt-1.5 text-amber-300 hover:text-white underline underline-offset-2 transition font-medium">
+                          Go to Settings → Add GitHub PAT
+                        </Link>
+                      )}
+                    </div>
                   )}
 
-                  <div className="mt-4 overflow-hidden rounded-lg border border-white/10">
+                  {/* PRs list */}
+                  <div className="mt-4 overflow-hidden rounded-xl border border-white/[0.06] bg-black/30">
                     {pulls.length === 0 ? (
-                      <div className="bg-gray-950/60 p-4 text-sm text-gray-500">
-                        No PR data loaded yet. Use Check PRs or enable Auto-review.
+                      <div className="p-4 text-sm text-gray-500 flex items-center gap-2">
+                        <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        No PR data loaded yet. Use{' '}
+                        <span className="text-gray-300 font-medium">Check PRs</span> or enable{' '}
+                        <span className="text-gray-300 font-medium">Local poll</span>.
                       </div>
                     ) : (
                       pulls.map((pull) => {
                         const job = jobs[pull.url];
                         return (
-                          <div key={pull.url} className="border-b border-white/5 bg-gray-950/50 p-4 last:border-b-0">
+                          <div
+                            key={pull.url}
+                            className="border-b border-white/[0.05] p-4 last:border-b-0 hover:bg-white/[0.02] transition"
+                          >
                             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                              <div className="min-w-0">
+                              <div className="min-w-0 flex-1">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <a
                                     href={pull.url}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="font-medium text-white hover:text-cyan-300"
+                                    className="font-medium text-white hover:text-cyan-300 transition truncate"
                                   >
-                                    #{pull.number} {pull.title}
+                                    <span className="text-gray-500">#{pull.number}</span> {pull.title}
                                   </a>
-                                  <span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(pull.reviewState)}`}>
+                                  <span
+                                    className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusClass(pull.reviewState)}`}
+                                  >
                                     {statusLabel(pull.reviewState)}
                                   </span>
                                 </div>
-                                <p className="mt-1 text-xs text-gray-500">
-                                  {pull.author} · head {pull.headSha.slice(0, 8)}
-                                  {pull.lastReviewSha ? ` · last reviewed ${pull.lastReviewSha.slice(0, 8)}` : ''}
+                                <p className="mt-1 text-[11px] text-gray-500 font-mono">
+                                  @{pull.author} · {pull.headSha.slice(0, 8)}
+                                  {pull.lastReviewSha ? ` · reviewed ${pull.lastReviewSha.slice(0, 8)}` : ''}
                                 </p>
                               </div>
                               <div className="flex flex-wrap items-center gap-2">
@@ -549,34 +649,51 @@ export default function RepositoriesPage() {
                                     href={pull.lastReviewUrl}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="rounded-md border border-white/10 px-3 py-2 text-xs text-gray-300 hover:bg-white/5"
+                                    className="btn-secondary !text-[11px] !py-1.5 !px-2.5"
                                   >
-                                    Last comment
+                                    Last comment ↗
                                   </a>
                                 )}
                                 <button
                                   type="button"
                                   onClick={() => void reviewPull(pull)}
                                   disabled={job?.status === 'running'}
-                                  className="rounded-md bg-cyan-500 px-3 py-2 text-xs font-semibold text-gray-950 hover:bg-cyan-400 disabled:cursor-wait disabled:bg-gray-700 disabled:text-gray-400"
+                                  className="inline-flex items-center gap-1 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 px-2.5 py-1.5 text-[11px] font-semibold text-white disabled:cursor-wait disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-400 transition shadow-sm shadow-cyan-500/20"
                                 >
-                                  {job?.status === 'running' ? 'Reviewing...' : 'Review now'}
+                                  {job?.status === 'running' ? (
+                                    <>
+                                      <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                      </svg>
+                                      Reviewing
+                                    </>
+                                  ) : (
+                                    <>Review now</>
+                                  )}
                                 </button>
                               </div>
                             </div>
 
                             {job && (
                               <p
-                                className={`mt-3 rounded-md border p-2 text-xs ${
+                                className={`mt-3 rounded-lg border p-2.5 text-[11px] ${
                                   job.status === 'error'
-                                    ? 'border-red-500/20 bg-red-500/10 text-red-300'
-                                    : 'border-cyan-500/20 bg-cyan-500/10 text-cyan-200'
+                                    ? 'border-rose-500/25 bg-rose-500/10 text-rose-300'
+                                    : job.status === 'done'
+                                      ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                                      : 'border-cyan-500/25 bg-cyan-500/10 text-cyan-200'
                                 }`}
                               >
                                 {job.message}
                                 {job.commentUrl && (
-                                  <a href={job.commentUrl} target="_blank" rel="noreferrer" className="ml-2 underline">
-                                    Open comment
+                                  <a
+                                    href={job.commentUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="ml-2 underline underline-offset-2"
+                                  >
+                                    Open comment ↗
                                   </a>
                                 )}
                               </p>
@@ -596,11 +713,27 @@ export default function RepositoriesPage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent: 'violet' | 'cyan' | 'amber' | 'rose';
+}) {
+  const colors: Record<string, string> = {
+    violet: 'from-violet-500/15 to-violet-500/5 border-violet-500/25 text-violet-300',
+    cyan: 'from-cyan-500/15 to-cyan-500/5 border-cyan-500/25 text-cyan-300',
+    amber: 'from-amber-500/15 to-amber-500/5 border-amber-500/25 text-amber-300',
+    rose: 'from-rose-500/15 to-rose-500/5 border-rose-500/25 text-rose-300',
+  };
   return (
-    <div className="min-w-24 rounded-lg border border-white/10 bg-gray-950/70 px-4 py-3">
-      <p className="text-xs text-gray-500">{label}</p>
-      <p className="mt-1 text-xl font-bold text-white">{value}</p>
+    <div
+      className={`min-w-[88px] rounded-xl border bg-gradient-to-br backdrop-blur-sm px-3 py-2.5 ${colors[accent]}`}
+    >
+      <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">{label}</p>
+      <p className="mt-0.5 text-2xl font-bold tabular-nums">{value}</p>
     </div>
   );
 }

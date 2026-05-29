@@ -15,6 +15,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runReview } from '@/lib/run-review';
 import { handleCommentEvent } from '@/lib/conversational';
+import { getAuthenticatedLogin } from '@/lib/github';
 import { parsePRUrl } from '@/lib/parser';
 import { getRepoOwner, getUserConfig, ReviewStyle } from '@/lib/storage';
 
@@ -33,7 +34,7 @@ import { getRepoOwner, getUserConfig, ReviewStyle } from '@/lib/storage';
 async function resolveCredentials(
   owner: string,
   repo: string,
-): Promise<{ githubToken?: string; geminiApiKey?: string; userId?: string; reviewStyle?: ReviewStyle }> {
+): Promise<{ githubToken?: string; geminiApiKey?: string; userId?: string; reviewStyle?: ReviewStyle; inlineMode?: boolean }> {
   try {
     const userId = await getRepoOwner(owner, repo);
     if (!userId) return {};
@@ -43,6 +44,7 @@ async function resolveCredentials(
       githubToken: cfg?.githubPAT,
       geminiApiKey: cfg?.geminiApiKey,
       reviewStyle: cfg?.reviewStyle,
+      inlineMode: cfg?.inlineMode,
     };
   } catch (err) {
     console.warn('[webhook] credential lookup failed, falling back to server:', err);
@@ -120,6 +122,8 @@ function handlePullRequest(payload: PullRequestPayload) {
   after(async () => {
     try {
       const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
+      // Reply mode (updateExisting) forces comment-mode (inline reviews can't be edited).
+      // For first-time reviews, default to inline if user opted in (default true).
       const outcome = await runReview(prUrl, {
         updateExisting: true,
         skipIfReviewed: true,
@@ -127,6 +131,8 @@ function handlePullRequest(payload: PullRequestPayload) {
         githubToken: creds.githubToken,
         geminiApiKey: creds.geminiApiKey,
         reviewStyle: creds.reviewStyle,
+        inlineMode: creds.inlineMode ?? true,
+        userId: creds.userId,
       });
       console.log(
         `[webhook] ${fullName} ${action} → ` +
@@ -175,8 +181,20 @@ function handleIssueComment(payload: IssueCommentPayload) {
     return NextResponse.json({ ok: true, ignored: 'could not parse PR URL from issue_comment' });
   }
 
+  // Resolve repo owner's credentials so the reply uses their PAT + Gemini key.
+  const fullName = payload.repository?.full_name ?? '';
+  const [owner, repo] = fullName.split('/');
+
   after(async () => {
     try {
+      const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
+      // Defense-in-depth: ignore the bot's OWN comments even when posted under
+      // a user's PAT (dynamic identity, not a fixed bot name).
+      const selfLogin = await getAuthenticatedLogin(creds.githubToken);
+      if (selfLogin && comment.user!.login!.toLowerCase() === selfLogin) {
+        console.log('[webhook] ignoring own issue_comment (dynamic identity).');
+        return;
+      }
       const result = await handleCommentEvent(
         prInfo,
         {
@@ -186,6 +204,7 @@ function handleIssueComment(payload: IssueCommentPayload) {
           htmlUrl: comment.html_url ?? '',
         },
         `PR #${prInfo.pullNumber}`,
+        { geminiApiKey: creds.geminiApiKey, githubToken: creds.githubToken },
       );
 
       if (!result) {
@@ -228,8 +247,17 @@ function handleReviewComment(payload: ReviewCommentPayload) {
     return NextResponse.json({ ok: true, ignored: 'could not parse PR URL from review_comment' });
   }
 
+  const fullName = payload.repository?.full_name ?? '';
+  const [owner, repo] = fullName.split('/');
+
   after(async () => {
     try {
+      const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
+      const selfLogin = await getAuthenticatedLogin(creds.githubToken);
+      if (selfLogin && comment.user!.login!.toLowerCase() === selfLogin) {
+        console.log('[webhook] ignoring own review_comment (dynamic identity).');
+        return;
+      }
       const result = await handleCommentEvent(
         prInfo,
         {
@@ -240,6 +268,7 @@ function handleReviewComment(payload: ReviewCommentPayload) {
           inReplyToId: comment.in_reply_to_id,
         },
         payload.pull_request?.title ?? `PR #${prInfo.pullNumber}`,
+        { geminiApiKey: creds.geminiApiKey, githubToken: creds.githubToken },
       );
 
       if (!result) {

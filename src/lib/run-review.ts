@@ -15,14 +15,26 @@ import {
   fetchPRMetadata,
   fetchPRFiles,
   postReviewComment,
+  postInlineReview,
   findLatestReviewComment,
+  findLatestSentinelReview,
   updateReviewComment,
 } from './github';
 import { processDiff, getChunkingSummary } from './chunking';
 import { analyzeChunk, scoutHotspots, getPrimaryModelName } from './gemini';
-import { formatReview, Hotspot } from './prompt';
-import { resolveActiveSkills } from './skills';
-import { ReviewResult, StreamEvent, PRInfo } from './types';
+import { formatReview, formatInlineComment, formatInlineReviewBody, Hotspot } from './prompt';
+import { buildValidLineMap, partitionFindings } from './patch-lines';
+import { resolveActiveSkills, Skill } from './skills';
+import { diffReviews } from './review-diff';
+import type { ProcessedDiff, ReviewFinding } from './types';
+import { calculateRiskScore } from './risk-score';
+import { recordReview, pushRecentReview } from './storage';
+import { ReviewResult, StreamEvent, PRInfo, DiffFile, PRMetadata } from './types';
+
+// Máximo de comentarios inline en una sola review request (la API tiene un
+// límite suave y comentarios muy abundantes generan ruido). Si hay más, los
+// excedentes caen al cuerpo principal.
+const MAX_INLINE_COMMENTS = 30;
 
 const TWO_PASS_ENABLED = process.env.TWO_PASS_ENABLED?.trim().toLowerCase() === 'true';
 const TWO_PASS_THRESHOLD = Number.parseInt(process.env.TWO_PASS_THRESHOLD ?? '12000', 10);
@@ -55,6 +67,14 @@ export interface RunReviewOptions {
   mode?: ReviewMode;
   /** Output format for the GitHub comment. 'caveman' = ultra-terse, ~70% fewer output tokens. Default = 'full'. */
   reviewStyle?: ReviewStyle;
+  /**
+   * Si true, postea cada finding como inline comment anclado a su línea del
+   * diff (review API de GitHub). Si false, postea un único comentario al final.
+   * Default = true: más útil para el desarrollador.
+   */
+  inlineMode?: boolean;
+  /** User ID para trackear stats en KV. Opcional. */
+  userId?: string;
 }
 
 export interface RunReviewOutcome {
@@ -147,7 +167,21 @@ function mergeChunkReviews(
   };
 }
 
-/** Postea o actualiza el comentario del review en GitHub, respetando reply mode. */
+/**
+ * Postea el review en GitHub. Soporta dos modos:
+ *
+ *  - **inline** (default): usa la Pull Request Review API para anclar cada
+ *    finding a la línea exacta del diff. Findings sin línea válida caen al
+ *    cuerpo principal del review para que nada se pierda.
+ *
+ *  - **comment** (legacy / `inlineMode=false` o `updateExisting=true`):
+ *    postea o actualiza un único comentario al final del PR. Útil para el
+ *    flujo de "reply mode" porque inline reviews no se pueden editar.
+ *
+ * Si el modo inline falla por cualquier razón (422 en alguna línea, falta de
+ * permisos, etc.), hace fallback al modo comentario para que el review siempre
+ * termine publicándose.
+ */
 async function publishReview(
   prInfo: PRInfo,
   review: ReviewResult,
@@ -155,7 +189,70 @@ async function publishReview(
   updateExisting: boolean,
   githubToken?: string,
   reviewStyle?: ReviewStyle,
+  options?: {
+    inlineMode?: boolean;
+    diffFiles?: DiffFile[];
+    headSha?: string;
+    prSize?: { additions?: number; deletions?: number; filesChanged?: number };
+  },
 ): Promise<{ commentUrl?: string; commentError?: string }> {
+  const inlineMode = options?.inlineMode ?? false;
+  const diffFiles = options?.diffFiles;
+  const headSha = options?.headSha;
+
+  // Inline mode requiere headSha + diff files. Si falta algo o si estamos en
+  // reply mode (updateExisting), caemos al modo comentario.
+  const canUseInline =
+    inlineMode &&
+    !updateExisting &&
+    !!headSha &&
+    !!diffFiles &&
+    diffFiles.length > 0;
+
+  if (canUseInline) {
+    try {
+      const validLines = buildValidLineMap(diffFiles!);
+      const partition = partitionFindings(review.categories, validLines);
+
+      // Respeta el cap de comentarios inline. Excedentes → leftover.
+      const sortedInline = [...partition.inline].sort((a, b) => severityWeight(b.finding.severity) - severityWeight(a.finding.severity));
+      const inlineKept = sortedInline.slice(0, MAX_INLINE_COMMENTS);
+      const inlineOverflow = sortedInline.slice(MAX_INLINE_COMMENTS);
+      const leftover = [...partition.leftover, ...inlineOverflow.map((i) => ({ finding: i.finding, category: i.category }))];
+
+      const body = formatInlineReviewBody(review, inlineKept.length, leftover, options?.prSize);
+      const comments = inlineKept.map((entry) => ({
+        path: entry.finding.file,
+        line: entry.line,
+        startLine: entry.startLine,
+        body: formatInlineComment(entry.finding, entry.category),
+      }));
+
+      emit({
+        type: 'status',
+        message: `📝 Posting inline review (${comments.length} inline + ${leftover.length} general)...`,
+      });
+
+      const { reviewUrl } = await postInlineReview(
+        prInfo,
+        { headSha: headSha!, body, comments },
+        githubToken,
+      );
+      review.metadata.commentUrl = reviewUrl;
+      emit({ type: 'status', message: `✅ Inline review posted: ${reviewUrl}` });
+      return { commentUrl: reviewUrl };
+    } catch (inlineErr) {
+      const msg = inlineErr instanceof Error ? inlineErr.message : 'Unknown error';
+      console.warn(`[publishReview] Inline mode failed, falling back to comment mode: ${msg}`);
+      emit({
+        type: 'status',
+        message: `⚠️ Inline review failed (${msg.slice(0, 80)}). Falling back to single comment.`,
+      });
+      // Continúa al fallback de comentario abajo.
+    }
+  }
+
+  // Modo comentario tradicional (legacy o fallback).
   const markdown = formatReview(review, reviewStyle);
 
   try {
@@ -186,6 +283,135 @@ async function publishReview(
   }
 }
 
+function severityWeight(severity: string): number {
+  switch (severity) {
+    case 'critical': return 5;
+    case 'high': return 4;
+    case 'medium': return 3;
+    case 'low': return 2;
+    case 'info': return 1;
+    default: return 0;
+  }
+}
+
+// ── Budget planning (never-fail core) ──────────────────────────────────────
+// A single Gemini chunk on a serverless function with a hard wall-clock limit
+// (Vercel hobby = 60s) can blow the budget and get the whole function killed
+// mid-stream. To guarantee we ALWAYS return a (possibly partial) review, we:
+//   1. Size how many chunks can realistically finish within the deadline.
+//   2. Lower the thinking budget when we're forced to truncate a large PR.
+// Observed: a small full-mode review takes ~50s; lite is faster (~26s).
+const FULL_CHUNK_MS = Number.parseInt(process.env.FULL_CHUNK_MS ?? '48000', 10);
+const LITE_CHUNK_MS = Number.parseInt(process.env.LITE_CHUNK_MS ?? '26000', 10);
+
+// When a PR is too big to fit, we re-chunk into SMALLER pieces so the single
+// chunk we analyze reliably finishes within the deadline (guaranteeing a real
+// partial review instead of nothing).
+const RECHUNK_TOKENS = Number.parseInt(process.env.RECHUNK_TOKENS ?? '16000', 10);
+// Any single chunk larger than this is considered too slow to finish reliably,
+// so we re-chunk even if the chunk COUNT already fits.
+const SAFE_CHUNK_TOKENS = Number.parseInt(process.env.SAFE_CHUNK_TOKENS ?? '20000', 10);
+
+interface BudgetPlan {
+  maxChunks: number;
+  thinkingBudget: number | undefined; // undefined = model default
+  skills: Skill[];
+  /** If set, re-chunk the diff with this smaller per-chunk token cap. */
+  rechunkTokens?: number;
+  note?: string;
+}
+
+function computeBudgetPlan(opts: {
+  processedDiff: ProcessedDiff;
+  mode: ReviewMode;
+  softDeadlineMs: number;
+  requestedSkills: Skill[];
+}): BudgetPlan {
+  const { processedDiff, mode, softDeadlineMs, requestedSkills } = opts;
+  const isLite = mode === 'lite';
+  const perChunkMs = isLite ? LITE_CHUNK_MS : FULL_CHUNK_MS;
+  const totalChunks = Math.max(1, processedDiff.chunks.length);
+
+  // How many chunks can we realistically finish within the deadline? Always >= 1.
+  const fitChunks = Math.max(1, Math.floor(softDeadlineMs / perChunkMs));
+  const liteCap = isLite ? 2 : Number.POSITIVE_INFINITY;
+  let maxChunks = Math.min(totalChunks, fitChunks, liteCap);
+
+  let thinkingBudget: number | undefined = isLite ? 1024 : undefined;
+
+  // Largest chunk we'd actually analyze (token-wise). A chunk this big may not
+  // finish in time even if the COUNT fits — so size matters too.
+  const analyzedChunks = processedDiff.chunks.slice(0, maxChunks);
+  const largestChunkTokens = analyzedChunks.reduce((m, c) => Math.max(m, c.tokenEstimate), 0);
+
+  // Truncate when the PR has more chunks than fit, OR any analyzed chunk is too
+  // big to finish reliably within the per-chunk budget.
+  const truncating = maxChunks < totalChunks || largestChunkTokens > SAFE_CHUNK_TOKENS;
+  let rechunkTokens: number | undefined;
+  if (truncating) {
+    // Re-chunk into small pieces and analyze just ONE so it reliably completes
+    // and returns a real partial review. Drop reasoning cost too.
+    rechunkTokens = RECHUNK_TOKENS;
+    maxChunks = 1;
+    thinkingBudget = isLite ? 1024 : 2048;
+  }
+
+  let note: string | undefined;
+  if (truncating) {
+    note = `📐 Large PR detected: analyzing the highest-priority slice (~${RECHUNK_TOKENS.toLocaleString()} tokens) to return a focused review within the time budget. Re-run or use Lite mode for more coverage.`;
+  } else if (isLite) {
+    note = '⚡ Lite mode: reduced thinking budget, fewer chunks, security + bugs only.';
+  }
+
+  return { maxChunks, thinkingBudget, skills: requestedSkills, rechunkTokens, note };
+}
+
+/**
+ * Consume a Gemini text stream but never block past `deadlineAt`. If the
+ * deadline hits mid-stream we stop reading, tear down the underlying request,
+ * and report `timedOut` so the caller can return a graceful partial result
+ * instead of letting Vercel kill the whole function.
+ */
+async function consumeStreamWithDeadline(
+  stream: AsyncIterable<{ text: string }>,
+  deadlineAt: number,
+  onText: (text: string) => void,
+): Promise<{ raw: string; timedOut: boolean }> {
+  const iterator = stream[Symbol.asyncIterator]();
+  let raw = '';
+  let timedOut = false;
+  try {
+    while (true) {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) {
+        timedOut = true;
+        break;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutP = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), remaining);
+      });
+      const result = await Promise.race([iterator.next(), timeoutP]);
+      if (timer) clearTimeout(timer);
+      if (result === 'timeout') {
+        timedOut = true;
+        break;
+      }
+      if (result.done) break;
+      raw += result.value.text;
+      onText(result.value.text);
+    }
+  } finally {
+    // Best-effort teardown of the underlying Gemini stream.
+    try {
+      await iterator.return?.();
+    } catch {
+      /* ignore */
+    }
+  }
+  return { raw, timedOut };
+}
+
 /**
  * Ejecuta el review completo de un PR de principio a fin.
  * Lanza si el parseo/análisis falla irrecuperablemente; los errores de
@@ -198,18 +424,16 @@ export async function runReview(
   const startTime = Date.now();
   const emit = options.onEvent ?? (() => {});
   const updateExisting = options.updateExisting ?? false;
-  const isLite = options.mode === 'lite';
+  const mode: ReviewMode = options.mode === 'lite' ? 'lite' : 'full';
+  const isLite = mode === 'lite';
   const liteSkills = ['security', 'bugs'];
-  const activeSkills = isLite
+  // Skills the user requested — used for diff prioritization and analysis.
+  // The budget plan (computed after processDiff) may keep or trim these.
+  const requestedSkills = isLite
     ? resolveActiveSkills(liteSkills)
     : resolveActiveSkills(options.skills);
-  const thinkingBudgetOverride = isLite ? 1024 : undefined;
-  const maxChunksOverride = isLite ? 2 : undefined;
+  const softDeadlineMs = options.softDeadlineMs ?? 55 * 1000;
   const { geminiApiKey, githubToken } = options;
-
-  if (isLite) {
-    emit({ type: 'status', message: '⚡ Lite mode: reduced thinking budget, fewer chunks, security + bugs only.' });
-  }
 
   // 1. Parse URL
   emit({ type: 'status', message: '🔗 Parsing PR URL...' });
@@ -222,18 +446,25 @@ export async function runReview(
   emit({ type: 'metadata', data: metadata });
   emit({ type: 'status', message: `✅ "${metadata.title}" by ${metadata.author}` });
 
-  // Fetch the previous review comment once — used for idempotency check AND context.
-  const previousComment = await findLatestReviewComment(prInfo, githubToken);
+  // Fetch the previous review once — across BOTH modes (issue comment OR inline
+  // review submission). Used for idempotency, context, and dedup so the bot
+  // never posts a duplicate review.
+  const previousReview = await findLatestSentinelReview(prInfo, githubToken);
 
-  if (options.skipIfReviewed && previousComment?.marker.headSha === metadata.headSha) {
+  if (options.skipIfReviewed && previousReview?.marker.headSha === metadata.headSha) {
     emit({
       type: 'status',
       message: `⏭️ Already reviewed at head ${metadata.headSha.slice(0, 8)}. Skipping.`,
     });
-    return { review: null, skipped: true, commentUrl: previousComment.htmlUrl };
+    return { review: null, skipped: true, commentUrl: previousReview.htmlUrl };
   }
 
-  const previousReviewBody = previousComment?.body;
+  const previousReviewBody = previousReview?.body;
+  // Dedup: if a prior Sentinel review exists, evolve a single comment instead
+  // of stacking a new one. (Manual UI runs rely on this; webhooks already set
+  // updateExisting.) Inline can't be patched in place, so re-runs fall to the
+  // comment-update path in publishReview.
+  const hasPriorReview = !!previousReview;
 
   // 3. Fetch files
   emit({ type: 'status', message: '📂 Fetching changed files...' });
@@ -245,7 +476,7 @@ export async function runReview(
 
   // 4. Process diff
   emit({ type: 'status', message: '🔧 Processing diff...' });
-  const processedDiff = processDiff(files, activeSkills.map((s) => s.id));
+  let processedDiff = processDiff(files, requestedSkills.map((s) => s.id));
   emit({ type: 'status', message: getChunkingSummary(processedDiff) });
 
   if (processedDiff.skippedFiles.length > 0) {
@@ -284,9 +515,31 @@ export async function runReview(
       },
     };
 
-    const published = await publishReview(prInfo, review, emit, updateExisting, githubToken, options.reviewStyle);
+    // Clean review (no diff): no hay nada que anclar inline, postear como comentario.
+    const published = await publishReview(
+      prInfo,
+      review,
+      emit,
+      updateExisting,
+      githubToken,
+      options.reviewStyle,
+      { inlineMode: false },
+    );
     emit({ type: 'complete', data: review });
     return { review, skipped: false, ...published };
+  }
+
+  // 4c. Budget plan: decide how many chunks / how much reasoning fits the
+  // deadline so the run NEVER gets killed mid-stream. Applies to all modes.
+  const budget = computeBudgetPlan({ processedDiff, mode, softDeadlineMs, requestedSkills });
+  const activeSkills = budget.skills;
+  const thinkingBudgetOverride = budget.thinkingBudget;
+  if (budget.note) emit({ type: 'status', message: budget.note });
+
+  // Re-chunk smaller for large PRs so the single analyzed chunk reliably
+  // finishes and returns a real (partial) review instead of timing out.
+  if (budget.rechunkTokens) {
+    processedDiff = processDiff(files, activeSkills.map((s) => s.id), budget.rechunkTokens);
   }
 
   // 5. Analyze with Gemini
@@ -315,17 +568,15 @@ export async function runReview(
   let cacheInfo = { cacheHit: false, cachedTokens: 0, totalTokens: 0 };
   let merged: Omit<ReviewResult, 'metadata'> | null = null;
   let partial = false;
-  // In lite mode, cap chunks to reduce token usage.
-  const effectiveChunks = maxChunksOverride
-    ? processedDiff.chunks.slice(0, maxChunksOverride)
-    : processedDiff.chunks;
+  // Cap chunks to what the budget plan says fits the deadline.
+  const effectiveChunks = processedDiff.chunks.slice(0, budget.maxChunks);
   const plannedChunks = effectiveChunks.length;
-  const softDeadlineMs = options.softDeadlineMs ?? 55 * 1000;
+  const deadlineAt = startTime + softDeadlineMs;
   let processedChunks = 0;
   const modelsUsed = new Set<string>();
 
   for (const chunk of effectiveChunks) {
-    if (Date.now() - startTime > softDeadlineMs) {
+    if (Date.now() > deadlineAt) {
       partial = true;
       emit({
         type: 'status',
@@ -357,10 +608,21 @@ export async function runReview(
       }
     );
 
-    let chunkRaw = '';
-    for await (const geminiChunk of geminiStream) {
-      chunkRaw += geminiChunk.text;
-      emit({ type: 'chunk', content: geminiChunk.text });
+    const { raw: chunkRaw, timedOut } = await consumeStreamWithDeadline(
+      geminiStream,
+      deadlineAt,
+      (text) => emit({ type: 'chunk', content: text }),
+    );
+
+    if (timedOut) {
+      // The model didn't finish this chunk in time. Stop here and keep
+      // whatever earlier chunks already produced (graceful partial).
+      partial = true;
+      emit({
+        type: 'status',
+        message: `⏱️ Time budget reached mid-analysis. Returning a partial review (${processedChunks}/${plannedChunks} chunks completed).`,
+      });
+      break;
     }
 
     try {
@@ -377,7 +639,10 @@ export async function runReview(
 
     const chunkCacheInfo = await getCacheInfo();
     cacheInfo = {
-      cacheHit: cacheInfo.cacheHit && chunkCacheInfo.cacheHit,
+      // A review is a cache hit if ANY chunk reused the cached primer. (The old
+      // AND-from-a-false-seed could never become true, so the metadata always
+      // reported "Cache Hit: No" even when the cache was reused.)
+      cacheHit: cacheInfo.cacheHit || chunkCacheInfo.cacheHit,
       cachedTokens: cacheInfo.cachedTokens + chunkCacheInfo.cachedTokens,
       totalTokens: cacheInfo.totalTokens + chunkCacheInfo.totalTokens,
     };
@@ -394,6 +659,17 @@ export async function runReview(
   // 6. Build final result
   const processingTime = Date.now() - startTime;
   if (!merged) {
+    // Never-fail: if we ran out of time before the first chunk produced a
+    // usable result, surface a clear, actionable message instead of throwing
+    // (which the SSE would render as a generic crash).
+    if (partial) {
+      emit({
+        type: 'error',
+        message:
+          'This PR is too large to finish even one analysis pass within the time limit. Try Lite mode (security + bugs only) or review a smaller PR / fewer files.',
+      });
+      return { review: null, skipped: false };
+    }
     throw new Error('No valid review response from AI model. All chunks failed to parse.');
   }
 
@@ -416,51 +692,131 @@ export async function runReview(
     review.summary = review.summary ? review.summary + suffix : suffix.trim();
   }
 
-  // 7. Publish to GitHub (mandatory deliverable)
-  const published = await publishReview(prInfo, review, emit, updateExisting, githubToken, options.reviewStyle);
-
-  // 8. Post re-verification summary when updating an existing review
-  if (updateExisting && published.commentUrl && previousReviewBody) {
+  // 6b. If a prior review exists with a findings fingerprint, fold a compact
+  // re-verification summary INTO this review's summary (single evolving
+  // comment — no separate stacking comment).
+  if (hasPriorReview && previousReview?.marker.findings?.length) {
     try {
-      const totalFindings =
-        review.categories.security.length +
-        review.categories.bugs.length +
-        review.categories.performance.length +
-        review.categories.codeQuality.length +
-        review.categories.suggestions.length;
-
-      const critCount = review.categories.security.filter((f) => f.severity === 'critical').length +
-        review.categories.bugs.filter((f) => f.severity === 'critical').length;
-      const highCount = review.categories.security.filter((f) => f.severity === 'high').length +
-        review.categories.bugs.filter((f) => f.severity === 'high').length;
-
-      const severity = critCount > 0 ? `${critCount} critical` : highCount > 0 ? `${highCount} high` : 'none critical/high';
-
-      // Caveman re-verification = one line. Full = expanded block.
-      const summary = options.reviewStyle === 'caveman'
-        ? `🔄 Re-verified at \`${metadata.headSha.slice(0, 8)}\` → ${totalFindings} findings (${severity}). Main review updated above.`
-        : [
-            '## 🔄 Re-verification Summary\n',
-            `PR Sentinel re-analyzed this PR after new commits (head: \`${metadata.headSha.slice(0, 8)}\`). The main review comment above has been **updated** with the latest analysis.\n`,
-            `**Current findings**: ${totalFindings} total (${severity})`,
-            `- 🔒 Security: ${review.categories.security.length}`,
-            `- 🐛 Bugs: ${review.categories.bugs.length}`,
-            `- ⚡ Performance: ${review.categories.performance.length}`,
-            `- 🧹 Code quality: ${review.categories.codeQuality.length}`,
-            `- 💡 Suggestions: ${review.categories.suggestions.length}`,
-            '',
-            '---\n*🤖 PR Sentinel — automated re-verification*',
-          ].join('\n');
-
-      await postReviewComment(prInfo, summary, githubToken);
-      emit({ type: 'status', message: '📊 Re-verification summary posted.' });
+      const prevFindings = previousReview.marker.findings;
+      const oldShape: ReviewResult = {
+        summary: '',
+        overallRiskLevel: 'low',
+        categories: {
+          bugs: prevFindings.map((f) => ({
+            title: f.title,
+            severity: f.severity as ReviewFinding['severity'],
+            file: f.file,
+            description: '',
+            suggestion: '',
+            cweId: f.cweId,
+          })),
+          security: [],
+          performance: [],
+          codeQuality: [],
+          suggestions: [],
+        },
+        positiveAspects: [],
+        metadata: review.metadata,
+      };
+      const diff = diffReviews(oldShape, review);
+      const line = `🔄 Re-review vs previous: ✅ ${diff.fixed.length} fixed · ⚠️ ${diff.persisting.length} still present · 🆕 ${diff.newFindings.length} new.`;
+      review.summary = review.summary ? `${line}\n\n${review.summary}` : line;
     } catch (err) {
-      // Non-fatal: the main review was already posted/updated successfully.
-      console.error('[run-review] Failed to post re-verification summary:', err);
+      console.warn('[run-review] re-verification fold-in failed (non-fatal):', err);
     }
   }
 
+  // 7. Publish to GitHub (mandatory deliverable)
+  // Dedup: update in place whenever a prior review exists (even a manual re-run
+  // from the UI), so we never stack duplicate reviews.
+  const effectiveUpdateExisting = updateExisting || hasPriorReview;
+  const inlineMode = options.inlineMode ?? true;
+  const published = await publishReview(
+    prInfo,
+    review,
+    emit,
+    effectiveUpdateExisting,
+    githubToken,
+    options.reviewStyle,
+    {
+      inlineMode,
+      diffFiles: processedDiff.files,
+      headSha: metadata.headSha,
+      prSize: {
+        additions: metadata.additions,
+        deletions: metadata.deletions,
+        filesChanged: metadata.filesChanged,
+      },
+    },
+  );
+
+  // Re-verification is now folded into the single evolving comment (step 6b),
+  // so we no longer post a separate stacking comment here.
+
+  // 9. Emit complete FIRST so the client gets results even if stats save is slow.
   emit({ type: 'complete', data: review });
 
+  // 10. Track stats (best-effort, fire-and-forget — never delays the stream).
+  if (options.userId) {
+    void trackStats(options.userId, review, metadata, prInfo, published.commentUrl);
+  }
+
   return { review, skipped: false, ...published };
+}
+
+/**
+ * Suma esta review a los contadores del usuario en KV. Best-effort, no lanza.
+ * Llamado al final de runReview cuando hay userId.
+ */
+async function trackStats(
+  userId: string,
+  review: ReviewResult,
+  metadata: PRMetadata,
+  prInfo: PRInfo,
+  commentUrl?: string,
+): Promise<void> {
+  try {
+    const sev = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    for (const [, findings] of Object.entries(review.categories)) {
+      for (const f of findings) {
+        if (f.severity in sev) sev[f.severity] += 1;
+      }
+    }
+    const byCategory = {
+      security: review.categories.security.length,
+      bugs: review.categories.bugs.length,
+      performance: review.categories.performance.length,
+      codeQuality: review.categories.codeQuality.length,
+      suggestions: review.categories.suggestions.length,
+    };
+    const findingsCount =
+      byCategory.security + byCategory.bugs + byCategory.performance + byCategory.codeQuality + byCategory.suggestions;
+
+    await Promise.all([
+      recordReview(userId, {
+        findings: sev,
+        byCategory,
+        tokensUsed: review.metadata.totalTokens,
+        cacheHit: review.metadata.cacheHit,
+      }),
+      pushRecentReview(userId, {
+        prUrl: prInfo.url,
+        prTitle: metadata.title,
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        pullNumber: prInfo.pullNumber,
+        riskLevel: review.overallRiskLevel,
+        riskScore: calculateRiskScore(review, {
+          additions: metadata.additions,
+          deletions: metadata.deletions,
+          filesChanged: metadata.filesChanged,
+        }).score,
+        findingsCount,
+        reviewedAt: Date.now(),
+        commentUrl,
+      }),
+    ]);
+  } catch (err) {
+    console.warn('[run-review] stats tracking failed (non-fatal):', err);
+  }
 }

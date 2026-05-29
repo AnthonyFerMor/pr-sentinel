@@ -68,10 +68,15 @@ export async function generateReply(
   previousReviewBody: string | null,
   commentAuthor: string,
   prTitle: string,
+  userApiKey?: string,
 ): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  // Conversational replies use the same per-user key as the main review.
+  // No server-side fallback — keeps quota under user control.
+  const apiKey = userApiKey?.trim();
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY not configured for conversational replies');
+    throw new Error(
+      'No Gemini API key for conversational reply. The repo owner must set their key in Settings.',
+    );
   }
 
   const client = new GoogleGenAI({ apiKey });
@@ -124,9 +129,11 @@ export async function handleCommentEvent(
     inReplyToId?: number;
   },
   prTitle: string,
+  /** Credentials of the repo owner (looked up from KV by the webhook handler). */
+  creds?: { geminiApiKey?: string; githubToken?: string },
 ): Promise<{ replied: boolean; commentUrl?: string } | null> {
-  // Find the previous review for context
-  const previousReview = await findLatestReviewComment(prInfo);
+  // Find the previous review for context (uses owner's PAT so private repos work).
+  const previousReview = await findLatestReviewComment(prInfo, creds?.githubToken);
 
   // Check if this is a reply to our comment or mentions us
   const parentBody = previousReview?.body ?? null;
@@ -146,11 +153,12 @@ export async function handleCommentEvent(
     previousReview?.body ?? null,
     comment.author,
     prTitle,
+    creds?.geminiApiKey,
   );
 
   const formattedReply = `> ${comment.body.split('\n')[0]}\n\n${replyText}\n\n---\n*🤖 PR Sentinel — conversational reply*`;
 
-  const { commentUrl } = await postReviewComment(prInfo, formattedReply);
+  const { commentUrl } = await postReviewComment(prInfo, formattedReply, creds?.githubToken);
 
   return { replied: true, commentUrl };
 }

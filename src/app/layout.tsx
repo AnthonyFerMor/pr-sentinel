@@ -9,22 +9,27 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'PR Sentinel — AI-Powered Code Review',
+  title: 'PR Sentinel — AI Code Review for GitHub PRs',
   description:
-    'Automated pull request reviews powered by Gemini 3.5 Flash. Find bugs, security issues, and code quality problems instantly.',
-  keywords: ['code review', 'pull request', 'AI', 'Gemini', 'GitHub', 'security', 'code quality'],
+    'Paste a GitHub PR URL and get a review posted as inline comments on the PR — security, bugs, performance, and more. Uses your own free Gemini API key.',
+  keywords: ['code review', 'pull request', 'AI', 'Gemini', 'GitHub', 'security', 'inline comments'],
   openGraph: {
-    title: 'PR Sentinel — AI-Powered Code Review',
-    description: 'Paste a GitHub PR URL and get an instant, thorough code review powered by Gemini 3.5 Flash with context caching.',
+    title: 'PR Sentinel — AI Code Review for GitHub PRs',
+    description:
+      'Paste a GitHub PR URL and get a review posted as inline comments — security findings, bugs, suggested fixes. Powered by Google Gemini (BYOK).',
     type: 'website',
     siteName: 'PR Sentinel',
   },
   twitter: {
-    card: 'summary_large_image',
-    title: 'PR Sentinel — AI-Powered Code Review',
-    description: 'Automated pull request reviews powered by Gemini 3.5 Flash.',
+    card: 'summary',
+    title: 'PR Sentinel — AI Code Review for GitHub PRs',
+    description:
+      'Paste a GitHub PR URL. Get inline review comments posted on the PR. Powered by Google Gemini — free API key required.',
   },
   robots: 'index, follow',
+  // App is English-only. Stop browser auto-translate from mangling the brand
+  // name ("PR Sentinel" → "Centinela de Relaciones Públicas") and tech terms.
+  other: { google: 'notranslate' },
 };
 
 export default function RootLayout({
@@ -33,8 +38,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark">
-      <body className="antialiased bg-gray-950 text-white font-sans">
+    <html lang="en" className="dark" translate="no">
+      <body className="antialiased bg-gray-950 text-white font-sans notranslate">
         <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-violet-600 focus:text-white focus:px-4 focus:py-2 focus:rounded-br-lg">
           Skip to main content
         </a>

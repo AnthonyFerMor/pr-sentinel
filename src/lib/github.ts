@@ -134,6 +134,74 @@ export async function postReviewComment(
 }
 
 /**
+ * Un comentario inline para el review API.
+ * Mapea 1:1 a lo que GitHub espera en `comments[]` de `createReview`.
+ */
+export interface InlineComment {
+  path: string;
+  /** Línea final del comentario (lado nuevo del diff). */
+  line: number;
+  /** Línea inicial opcional para comentarios multi-línea. */
+  startLine?: number;
+  body: string;
+}
+
+/**
+ * Postea el review en modo "inline": un review único de GitHub con
+ * comentarios anclados a líneas específicas del diff. Es lo que hacen
+ * herramientas como CodeRabbit/Greptile — el feedback aparece donde
+ * está el código, no en un comentario gigante al final.
+ *
+ * - `headSha`: SHA del commit sobre el que se hace el review. GitHub lo
+ *   exige porque los comentarios se anclan a ese commit; si el PR avanza,
+ *   GitHub los marca como "outdated" automáticamente.
+ * - `event: 'COMMENT'` — no aprueba ni rechaza, sólo comenta. Coherente
+ *   con un revisor automático (nunca queremos bloquear merges).
+ */
+export async function postInlineReview(
+  pr: PRInfo,
+  params: {
+    headSha: string;
+    body: string;
+    comments: InlineComment[];
+  },
+  githubToken?: string,
+): Promise<{ reviewUrl: string }> {
+  const octokit = getOctokit(githubToken);
+
+  const { data } = await octokit.rest.pulls.createReview({
+    owner: pr.owner,
+    repo: pr.repo,
+    pull_number: pr.pullNumber,
+    commit_id: params.headSha,
+    body: params.body,
+    event: 'COMMENT',
+    comments: params.comments.map((c) => {
+      const base: {
+        path: string;
+        body: string;
+        line: number;
+        side: 'RIGHT';
+        start_line?: number;
+        start_side?: 'RIGHT';
+      } = {
+        path: c.path,
+        body: c.body,
+        line: c.line,
+        side: 'RIGHT',
+      };
+      if (typeof c.startLine === 'number' && c.startLine < c.line) {
+        base.start_line = c.startLine;
+        base.start_side = 'RIGHT';
+      }
+      return base;
+    }),
+  });
+
+  return { reviewUrl: data.html_url };
+}
+
+/**
  * Busca el último comentario de PR Sentinel en un PR (identificado por su marker).
  * Sirve para el "reply mode": en vez de postear un comentario nuevo en cada
  * revisión, actualizamos el existente para no llenar el PR de ruido.
@@ -163,6 +231,81 @@ export async function findLatestReviewComment(
 }
 
 /**
+ * Busca el último review SUBMISSION de PR Sentinel (modo inline). Los reviews
+ * inline se postean con `pulls.createReview`, así que NO aparecen en
+ * `issues.listComments` — viven en `pulls.listReviews`. Sin esto, el bot no
+ * "ve" sus propios reviews inline previos y crearía duplicados al re-revisar.
+ */
+export async function findLatestReviewSubmission(
+  pr: PRInfo,
+  githubToken?: string,
+): Promise<{ reviewId: number; htmlUrl: string; body: string; marker: ReviewMarker } | null> {
+  const octokit = getOctokit(githubToken);
+
+  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
+    owner: pr.owner,
+    repo: pr.repo,
+    pull_number: pr.pullNumber,
+    per_page: 100,
+  });
+
+  let latest: { reviewId: number; htmlUrl: string; body: string; marker: ReviewMarker } | null = null;
+  for (const review of reviews) {
+    const body = review.body ?? '';
+    const marker = parseReviewMarker(body);
+    if (marker) {
+      latest = { reviewId: review.id, htmlUrl: review.html_url ?? '', body, marker };
+    }
+  }
+  return latest;
+}
+
+/**
+ * Encuentra el review previo de PR Sentinel en CUALQUIER modo (comentario o
+ * inline) y devuelve el más reciente. Es la fuente única de verdad para
+ * idempotencia, contexto y dedup. `kind` indica de dónde vino para que el
+ * caller decida si puede actualizar in-place (comentario) o no (inline).
+ */
+export async function findLatestSentinelReview(
+  pr: PRInfo,
+  githubToken?: string,
+): Promise<{
+  kind: 'comment' | 'inline';
+  id: number;
+  htmlUrl: string;
+  body: string;
+  marker: ReviewMarker;
+} | null> {
+  const [comment, submission] = await Promise.all([
+    findLatestReviewComment(pr, githubToken),
+    findLatestReviewSubmission(pr, githubToken),
+  ]);
+
+  if (!comment && !submission) return null;
+
+  // Prefer the most recently generated (marker.generatedAt is an ISO string).
+  const commentTime = comment ? Date.parse(comment.marker.generatedAt) : -Infinity;
+  const submissionTime = submission ? Date.parse(submission.marker.generatedAt) : -Infinity;
+
+  if (submission && submissionTime >= commentTime) {
+    return {
+      kind: 'inline',
+      id: submission.reviewId,
+      htmlUrl: submission.htmlUrl,
+      body: submission.body,
+      marker: submission.marker,
+    };
+  }
+  return {
+    kind: 'comment',
+    id: comment!.commentId,
+    htmlUrl: comment!.htmlUrl,
+    body: comment!.body,
+    marker: comment!.marker,
+  };
+}
+
+/**
  * Actualiza (PATCH) un comentario existente con el nuevo review markdown.
  */
 export async function updateReviewComment(
@@ -181,6 +324,26 @@ export async function updateReviewComment(
   });
 
   return { commentUrl: data.html_url };
+}
+
+// Cache the authenticated login per token so the webhook can recognize the
+// bot's OWN comments even in multi-tenant mode (comments posted under a user's
+// PAT, not a fixed "pr-sentinel[bot]" name). Prevents self-reply loops/dupes.
+const authLoginCache = new Map<string, string>();
+
+export async function getAuthenticatedLogin(githubToken?: string): Promise<string | null> {
+  const key = githubToken ?? '__env__';
+  const cached = authLoginCache.get(key);
+  if (cached) return cached;
+  try {
+    const octokit = getOctokit(githubToken);
+    const { data } = await octokit.rest.users.getAuthenticated();
+    const login = data.login?.toLowerCase() ?? null;
+    if (login) authLoginCache.set(key, login);
+    return login;
+  } catch {
+    return null;
+  }
 }
 
 export async function listAccessibleRepositories(githubToken?: string): Promise<RepositorySummary[]> {

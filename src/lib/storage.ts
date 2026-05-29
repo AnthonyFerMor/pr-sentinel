@@ -29,6 +29,12 @@ export interface UserConfig {
   githubPAT?: string;
   /** Output format for PR review comments. Default = 'full'. User opt-in for 'caveman' (token-saving). */
   reviewStyle?: ReviewStyle;
+  /**
+   * Inline mode: si true, postea cada finding como comentario inline anclado
+   * a la línea exacta del diff (estilo CodeRabbit). Si false, usa un solo
+   * comentario gigante al final del PR. Default = true.
+   */
+  inlineMode?: boolean;
 }
 
 export interface EnabledRepo {
@@ -120,7 +126,44 @@ const k = {
   user: (userId: string) => `user:${userId}`,
   repo: (owner: string, repo: string) => `repo:${owner.toLowerCase()}/${repo.toLowerCase()}`,
   userRepos: (userId: string) => `userRepos:${userId}`,
+  userStats: (userId: string) => `stats:${userId}`,
+  userRecent: (userId: string) => `recent:${userId}`,
+  geminiCache: (cacheKey: string) => `geminicache:${cacheKey}`,
 };
+
+// ── Gemini explicit-cache registry ───────────────────────────
+// The Gemini cachedContent resource name is NOT a secret — it's scoped to the
+// API key that created it. We persist it in KV so every serverless instance
+// (and the cache-stats endpoint) reuses the SAME cache within its TTL, instead
+// of each cold start creating a throwaway cache that never produces a hit.
+
+export async function getGeminiCacheName(cacheKey: string): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return await redis.get<string>(k.geminiCache(cacheKey));
+}
+
+export async function setGeminiCacheName(
+  cacheKey: string,
+  name: string,
+  ttlSeconds: number,
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(k.geminiCache(cacheKey), name, { ex: Math.max(60, ttlSeconds) });
+}
+
+/** Lists currently-registered Gemini caches (best-effort; for the stats dashboard). */
+export async function listGeminiCacheNames(): Promise<{ cacheKey: string; name: string }[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+  const keys = await redis.keys(k.geminiCache('*'));
+  if (!keys.length) return [];
+  const names = await Promise.all(keys.map((key) => redis.get<string>(key)));
+  return keys
+    .map((key, i) => ({ cacheKey: key.replace('geminicache:', ''), name: names[i] ?? '' }))
+    .filter((entry) => entry.name);
+}
 
 // ── User config (geminiApiKey + githubPAT) ───────────────────
 
@@ -128,6 +171,7 @@ interface EncryptedUserConfig {
   geminiApiKey?: string; // encrypted
   githubPAT?: string;    // encrypted
   reviewStyle?: ReviewStyle; // plaintext (non-sensitive preference)
+  inlineMode?: boolean;      // plaintext (non-sensitive preference)
 }
 
 /**
@@ -153,6 +197,9 @@ export async function saveUserConfig(userId: string, partial: UserConfig): Promi
   if (partial.reviewStyle !== undefined) {
     next.reviewStyle = partial.reviewStyle;
   }
+  if (partial.inlineMode !== undefined) {
+    next.inlineMode = partial.inlineMode;
+  }
 
   await redis.set(k.user(userId), next);
 }
@@ -169,6 +216,7 @@ export async function getUserConfig(userId: string): Promise<UserConfig | null> 
     geminiApiKey: stored.geminiApiKey ? decrypt(stored.geminiApiKey) ?? undefined : undefined,
     githubPAT: stored.githubPAT ? decrypt(stored.githubPAT) ?? undefined : undefined,
     reviewStyle: stored.reviewStyle,
+    inlineMode: stored.inlineMode,
   };
 }
 
@@ -249,4 +297,129 @@ export async function getEnabledWebhookId(
   const list = await getEnabledRepos(userId);
   const match = list.find((r) => r.owner === owner && r.repo === repo);
   return match?.webhookId ?? null;
+}
+
+// ── Stats tracking (per-user usage analytics) ────────────────
+
+export interface UserStats {
+  totalReviews: number;
+  totalFindings: number;
+  bySeverity: { critical: number; high: number; medium: number; low: number; info: number };
+  byCategory: { security: number; bugs: number; performance: number; codeQuality: number; suggestions: number };
+  totalTokensUsed: number;
+  totalCacheHits: number;
+  totalCacheMisses: number;
+  firstReviewAt?: number;
+  lastReviewAt?: number;
+}
+
+const EMPTY_STATS: UserStats = {
+  totalReviews: 0,
+  totalFindings: 0,
+  bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+  byCategory: { security: 0, bugs: 0, performance: 0, codeQuality: 0, suggestions: 0 },
+  totalTokensUsed: 0,
+  totalCacheHits: 0,
+  totalCacheMisses: 0,
+};
+
+export interface RecentReview {
+  prUrl: string;
+  prTitle: string;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  riskLevel: 'critical' | 'high' | 'medium' | 'low' | 'clean';
+  riskScore?: number;
+  findingsCount: number;
+  reviewedAt: number;
+  commentUrl?: string;
+}
+
+/**
+ * Suma una review terminada al contador del usuario.
+ * Best-effort: si KV no está configurado, simplemente no-op.
+ * NUNCA lanza — los stats son secundarios al review en sí.
+ */
+export async function recordReview(
+  userId: string,
+  delta: {
+    findings: { critical: number; high: number; medium: number; low: number; info: number };
+    byCategory: { security: number; bugs: number; performance: number; codeQuality: number; suggestions: number };
+    tokensUsed: number;
+    cacheHit: boolean;
+  },
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const current = (await redis.get<UserStats>(k.userStats(userId))) ?? { ...EMPTY_STATS };
+    const now = Date.now();
+    const findingsTotal =
+      delta.findings.critical + delta.findings.high + delta.findings.medium + delta.findings.low + delta.findings.info;
+
+    const next: UserStats = {
+      totalReviews: current.totalReviews + 1,
+      totalFindings: current.totalFindings + findingsTotal,
+      bySeverity: {
+        critical: current.bySeverity.critical + delta.findings.critical,
+        high: current.bySeverity.high + delta.findings.high,
+        medium: current.bySeverity.medium + delta.findings.medium,
+        low: current.bySeverity.low + delta.findings.low,
+        info: current.bySeverity.info + delta.findings.info,
+      },
+      byCategory: {
+        security: current.byCategory.security + delta.byCategory.security,
+        bugs: current.byCategory.bugs + delta.byCategory.bugs,
+        performance: current.byCategory.performance + delta.byCategory.performance,
+        codeQuality: current.byCategory.codeQuality + delta.byCategory.codeQuality,
+        suggestions: current.byCategory.suggestions + delta.byCategory.suggestions,
+      },
+      totalTokensUsed: current.totalTokensUsed + delta.tokensUsed,
+      totalCacheHits: current.totalCacheHits + (delta.cacheHit ? 1 : 0),
+      totalCacheMisses: current.totalCacheMisses + (delta.cacheHit ? 0 : 1),
+      firstReviewAt: current.firstReviewAt ?? now,
+      lastReviewAt: now,
+    };
+    await redis.set(k.userStats(userId), next);
+  } catch (err) {
+    console.warn('[storage] recordReview failed:', err);
+  }
+}
+
+/**
+ * Añade una review reciente al historial (rolling window de 20).
+ * Best-effort, never throws.
+ */
+export async function pushRecentReview(userId: string, entry: RecentReview): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const list = (await redis.get<RecentReview[]>(k.userRecent(userId))) ?? [];
+    list.unshift(entry);
+    await redis.set(k.userRecent(userId), list.slice(0, 20));
+  } catch (err) {
+    console.warn('[storage] pushRecentReview failed:', err);
+  }
+}
+
+export async function getUserStats(userId: string): Promise<UserStats> {
+  const redis = getRedis();
+  if (!redis) return { ...EMPTY_STATS };
+  try {
+    const stored = await redis.get<UserStats>(k.userStats(userId));
+    return stored ?? { ...EMPTY_STATS };
+  } catch {
+    return { ...EMPTY_STATS };
+  }
+}
+
+export async function getRecentReviews(userId: string): Promise<RecentReview[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+  try {
+    return (await redis.get<RecentReview[]>(k.userRecent(userId))) ?? [];
+  } catch {
+    return [];
+  }
 }

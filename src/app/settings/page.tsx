@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
+import Aurora from '@/components/Aurora';
 
 interface CacheStats {
   primaryModel?: string;
@@ -47,6 +48,11 @@ export default function SettingsPage() {
   const [savingStyle, setSavingStyle] = useState(false);
   const [styleMessage, setStyleMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Inline mode: inline review comments per line (default) vs. single bottom comment.
+  const [inlineMode, setInlineMode] = useState<boolean>(true);
+  const [savingInline, setSavingInline] = useState(false);
+  const [inlineMessage, setInlineMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.push('/login');
@@ -63,6 +69,9 @@ export default function SettingsPage() {
         if (typeof data.storageAvailable === 'boolean') setStorageAvailable(data.storageAvailable);
         if (data.reviewStyle === 'full' || data.reviewStyle === 'lite' || data.reviewStyle === 'caveman') {
           setReviewStyle(data.reviewStyle);
+        }
+        if (typeof data.inlineMode === 'boolean') {
+          setInlineMode(data.inlineMode);
         }
       })
       .catch(() => {});
@@ -108,7 +117,7 @@ export default function SettingsPage() {
       if (!response.ok) throw new Error('Failed to clear');
       setMaskedKey(null);
       setGeminiKey('');
-      setMessage({ type: 'success', text: 'API key removed. Server default will be used.' });
+      setMessage({ type: 'success', text: 'API key removed. You must add a new one before running reviews.' });
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Clear failed' });
     } finally {
@@ -161,6 +170,33 @@ export default function SettingsPage() {
     }
   };
 
+  const handleSaveInlineMode = async (next: boolean) => {
+    setSavingInline(true);
+    setInlineMessage(null);
+    const prev = inlineMode;
+    setInlineMode(next); // optimistic
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineMode: next }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to save');
+      setInlineMessage({
+        type: 'success',
+        text: next
+          ? 'Inline comments enabled. Each finding will appear next to its line on the PR diff.'
+          : 'Inline comments disabled. Reviews will post as a single bottom-of-PR comment.',
+      });
+    } catch (err) {
+      setInlineMode(prev); // revert on error
+      setInlineMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
+    } finally {
+      setSavingInline(false);
+    }
+  };
+
   const handleClearPat = async () => {
     setSavingPat(true);
     setPatMessage(null);
@@ -201,16 +237,26 @@ export default function SettingsPage() {
   return (
     <>
       <Header />
-      <main className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(120,80,255,0.15),transparent)] pointer-events-none" />
+      <main className="relative min-h-screen bg-[var(--surface-0)] text-white overflow-hidden">
+        <Aurora />
 
-        <div className="relative max-w-3xl mx-auto px-4 pt-10 pb-20">
+        <div className="relative z-10 max-w-3xl mx-auto px-5 sm:px-6 pt-12 sm:pt-14 pb-24">
           {/* Header */}
-          <div className="mb-8">
-            <h2 className="text-2xl md:text-3xl font-bold text-white tracking-tight">Settings</h2>
-            <p className="text-gray-400 text-sm mt-1">
-              Manage your account, API keys, and view system status.
+          <div className="mb-10 animate-slideUp">
+            <span className="step-pill mb-3">Account Configuration</span>
+            <h2 className="text-3xl md:text-4xl font-bold text-white tracking-tight mt-2">
+              Settings
+            </h2>
+            <p className="text-gray-400 text-base mt-2 leading-relaxed">
+              Manage your account, API keys, and review preferences.
             </p>
+
+            {/* Setup checklist — quick visual on what's configured */}
+            <div className="mt-6 flex flex-wrap gap-2">
+              <SetupChip done={true} label="GitHub OAuth" />
+              <SetupChip done={!!maskedKey} label="Gemini key" required={!maskedKey} />
+              <SetupChip done={!!maskedPat} label="GitHub PAT" optional={!maskedPat} />
+            </div>
           </div>
 
           {/* Account */}
@@ -287,19 +333,20 @@ export default function SettingsPage() {
               {maskedKey ? (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  <span className="text-xs text-emerald-400 font-medium">Your key</span>
+                  <span className="text-xs text-emerald-400 font-medium">Active</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20">
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                  <span className="text-xs text-amber-400 font-medium">Using fallback</span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/20">
+                  <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
+                  <span className="text-xs text-rose-400 font-medium">Required</span>
                 </span>
               )}
             </div>
 
             <div className="p-6">
               <p className="text-sm text-gray-400 mb-4 leading-relaxed">
-                Get a free key from{' '}
+                <strong className="text-gray-200">Required.</strong> PR Sentinel runs on your own
+                Gemini quota — no shared server key. Get a free key at{' '}
                 <a
                   href="https://ai.google.dev"
                   target="_blank"
@@ -308,8 +355,7 @@ export default function SettingsPage() {
                 >
                   Google AI Studio
                 </a>
-                . Stored encrypted in an httpOnly cookie, never sent to the browser after save.
-                Without your own key, reviews use the shared server fallback (slower under load).
+                . Stored encrypted server-side (AES-256-GCM), never exposed to the browser after save.
               </p>
 
               {maskedKey && (
@@ -472,6 +518,96 @@ export default function SettingsPage() {
                 }`}>
                   <span aria-hidden="true">{patMessage.type === 'success' ? '✓' : '⚠'}</span>
                   <span>{patMessage.text}</span>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Inline comments toggle — anchor findings to specific diff lines */}
+          <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+                <span className="text-violet-400">💬</span>
+                Comment Placement
+              </h3>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/20">
+                <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />
+                <span className="text-xs text-violet-300 font-medium">{inlineMode ? 'Inline' : 'Single comment'}</span>
+              </span>
+            </div>
+
+            <div className="p-6">
+              <p className="text-sm text-gray-400 mb-4 leading-relaxed">
+                Where PR Sentinel attaches its findings. Inline mode posts each finding as a comment
+                next to the exact line in the &quot;Files changed&quot; view — much faster to act on. Single
+                comment mode posts everything at the bottom of the PR (legacy behavior).
+              </p>
+
+              <div className="grid sm:grid-cols-2 gap-2">
+                {([
+                  {
+                    id: true,
+                    label: 'Inline comments',
+                    icon: '🎯',
+                    desc: 'One review with each finding anchored to its line in the diff. Recommended.',
+                    pill: 'Recommended',
+                  },
+                  {
+                    id: false,
+                    label: 'Single bottom comment',
+                    icon: '📜',
+                    desc: 'All findings collected into one comment at the bottom of the PR.',
+                  },
+                ] as const).map((opt) => {
+                  const active = inlineMode === opt.id;
+                  return (
+                    <button
+                      key={String(opt.id)}
+                      type="button"
+                      onClick={() => !savingInline && opt.id !== inlineMode && handleSaveInlineMode(opt.id)}
+                      disabled={savingInline}
+                      className={`text-left flex items-start gap-3 p-3 rounded-xl border transition disabled:opacity-50 ${
+                        active
+                          ? 'border-violet-500/50 bg-violet-500/10'
+                          : 'border-white/10 bg-gray-950/40 hover:border-white/20 hover:bg-gray-900/60'
+                      }`}
+                    >
+                      <span className="text-xl mt-0.5" aria-hidden="true">{opt.icon}</span>
+                      <span className="flex-1 min-w-0">
+                        <span className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-sm font-semibold ${active ? 'text-violet-200' : 'text-gray-200'}`}>
+                            {opt.label}
+                          </span>
+                          {'pill' in opt && opt.pill && (
+                            <span className="text-[10px] text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-full px-2 py-0.5 uppercase tracking-wider">
+                              {opt.pill}
+                            </span>
+                          )}
+                          {active && (
+                            <span className="text-[10px] text-violet-300 bg-violet-500/15 border border-violet-500/30 rounded-full px-2 py-0.5 uppercase tracking-wider">
+                              Active
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-xs text-gray-400 mt-0.5 leading-relaxed">{opt.desc}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-white/5 bg-gray-950/40 p-3 text-xs text-gray-400 leading-relaxed">
+                <span className="font-semibold text-gray-300">Note:</span> Inline mode only applies
+                to first-time reviews. When PR Sentinel re-reviews a PR after new commits, it edits
+                the existing single comment (GitHub doesn&apos;t allow editing inline reviews).
+              </div>
+
+              {inlineMessage && (
+                <div className={`mt-3 flex items-start gap-2 text-sm ${
+                  inlineMessage.type === 'success' ? 'text-emerald-400' : 'text-red-400'
+                }`}>
+                  <span aria-hidden="true">{inlineMessage.type === 'success' ? '✓' : '⚠'}</span>
+                  <span>{inlineMessage.text}</span>
                 </div>
               )}
             </div>
@@ -644,7 +780,7 @@ export default function SettingsPage() {
               </li>
               <li className="flex gap-2">
                 <span className="text-blue-400">•</span>
-                Auto-bot webhooks fire with <em>your</em> PAT + Gemini key (or server default if you don&apos;t set them).
+                Auto-bot webhooks fire with <em>your</em> PAT + Gemini key. No shared server quota.
               </li>
               <li className="flex gap-2">
                 <span className="text-blue-400">•</span>
@@ -656,6 +792,49 @@ export default function SettingsPage() {
       </main>
     </>
   );
+}
+
+function SetupChip({
+  done,
+  label,
+  required,
+  optional,
+}: {
+  done: boolean;
+  label: string;
+  required?: boolean;
+  optional?: boolean;
+}) {
+  if (done) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-medium text-emerald-300">
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        {label}
+      </span>
+    );
+  }
+  if (required) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/25 text-[11px] font-medium text-rose-300">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="animate-pulseRing absolute inline-flex h-full w-full rounded-full bg-rose-400" />
+          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-rose-400" />
+        </span>
+        {label} required
+      </span>
+    );
+  }
+  if (optional) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/10 text-[11px] font-medium text-gray-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-gray-500" />
+        {label} (optional)
+      </span>
+    );
+  }
+  return null;
 }
 
 function CacheStat({ label, value, color }: { label: string; value: string | number; color: 'emerald' | 'amber' | 'violet' | 'cyan' }) {
