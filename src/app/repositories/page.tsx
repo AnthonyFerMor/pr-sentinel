@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import Header from '@/components/Header';
 import Aurora from '@/components/Aurora';
 import { PullRequestSummary, RepositorySummary } from '@/lib/types';
@@ -407,9 +408,19 @@ export default function RepositoriesPage() {
           </div>
 
           {repoErrors.global && (
-            <p className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 p-3.5 text-sm text-rose-300 animate-fadeIn">
-              {repoErrors.global}
-            </p>
+            <div className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 p-4 text-sm text-rose-300 animate-fadeIn">
+              <p className="font-semibold mb-1">⚠ Could not load repositories</p>
+              <p className="text-rose-200/80 text-xs leading-relaxed">{repoErrors.global}</p>
+              {repoErrors.global.includes('PAT') || repoErrors.global.includes('configured') ? (
+                <Link href="/settings" className="inline-flex items-center gap-1 mt-2 text-xs text-rose-200 underline underline-offset-2 hover:text-white transition">
+                  Go to Settings →
+                </Link>
+              ) : (
+                <button type="button" onClick={() => void loadRepositories()} className="mt-2 text-xs text-rose-200 underline underline-offset-2 hover:text-white transition">
+                  Try again
+                </button>
+              )}
+            </div>
           )}
 
           <div className="mt-7 space-y-4">
@@ -424,23 +435,32 @@ export default function RepositoriesPage() {
             )}
 
             {!isLoadingRepos && repositories.length === 0 && (
-              <div className="glass-card p-12 text-center animate-fadeIn">
+              <div className="glass-card p-10 text-center animate-fadeIn">
                 <div className="inline-flex w-16 h-16 mb-5 rounded-2xl bg-gradient-to-br from-violet-500/20 to-blue-500/10 border border-white/10 items-center justify-center">
                   <svg className="w-7 h-7 text-violet-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
                   </svg>
                 </div>
-                <h3 className="text-xl font-semibold text-white mb-2">No repositories yet</h3>
-                <p className="text-sm text-gray-400 max-w-md mx-auto mb-6 leading-relaxed">
-                  Sync from GitHub to load the repos your account has access to, or add a
-                  public repo by URL.
+                <h3 className="text-xl font-semibold text-white mb-2">No repositories found</h3>
+                <p className="text-sm text-gray-400 max-w-md mx-auto mb-2 leading-relaxed">
+                  No repos from your GitHub account were found. You can sync again or paste any
+                  GitHub repo URL you have read access to.
                 </p>
-                <button type="button" onClick={() => void loadRepositories()} className="btn-primary">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  Sync from GitHub
-                </button>
+                <p className="text-xs text-gray-500 max-w-sm mx-auto mb-6 leading-relaxed">
+                  If your repos aren&apos;t showing, make sure you authorized PR Sentinel with the
+                  correct GitHub account. You can also add any public repo by pasting its URL above.
+                </p>
+                <div className="flex flex-wrap gap-3 justify-center">
+                  <button type="button" onClick={() => void loadRepositories()} className="btn-primary">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Sync from GitHub
+                  </button>
+                  <Link href="/" className="btn-secondary">
+                    Review a PR manually →
+                  </Link>
+                </div>
               </div>
             )}
 
@@ -572,9 +592,14 @@ export default function RepositoriesPage() {
                   )}
 
                   {autoBotErrors[key] && (
-                    <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-200">
-                      🤖 Auto-bot: {autoBotErrors[key]}
-                    </p>
+                    <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-200">
+                      <p>🤖 Auto-bot: {autoBotErrors[key]}</p>
+                      {(autoBotErrors[key].includes('PAT') || autoBotErrors[key].includes('Settings')) && (
+                        <Link href="/settings" className="inline-flex items-center gap-1 mt-1.5 text-amber-300 hover:text-white underline underline-offset-2 transition font-medium">
+                          Go to Settings → Add GitHub PAT
+                        </Link>
+                      )}
+                    </div>
                   )}
 
                   {/* PRs list */}
