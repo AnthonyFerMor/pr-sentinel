@@ -80,6 +80,12 @@ export function useReviewStream(): UseReviewStreamReturn {
 
       const decoder = new TextDecoder();
       let buffer = '';
+      // Track whether the stream ended cleanly (got complete or error event).
+      // If neither arrives and the stream just closes, it means the server
+      // function was killed mid-stream (e.g. Vercel 60s timeout on a huge PR).
+      // Without this guard, the UI silently resets and the user thinks the
+      // page broke.
+      let receivedTerminalEvent = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -117,15 +123,24 @@ export function useReviewStream(): UseReviewStreamReturn {
                 break;
               case 'complete':
                 setReview(event.data);
+                receivedTerminalEvent = true;
                 break;
               case 'error':
                 setError(event.message);
+                receivedTerminalEvent = true;
                 break;
             }
           } catch {
             // Malformed SSE line, skip
           }
         }
+      }
+
+      // Stream closed without complete or error → server was killed mid-stream.
+      if (!receivedTerminalEvent) {
+        setError(
+          'The review timed out before finishing — this can happen on very large PRs. Try Lite mode for a faster pass, or pick a smaller PR.'
+        );
       }
     } catch (err) {
       if (err instanceof Error && err.name !== 'AbortError') {
