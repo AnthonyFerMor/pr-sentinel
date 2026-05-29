@@ -82,21 +82,21 @@ function ReviewApp() {
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-violet-400" />
               </span>
               <span className="text-[11px] font-semibold text-violet-200 tracking-wider uppercase">
-                Powered by Gemini 2.5 Flash
+                Powered by Google Gemini
               </span>
             </div>
 
             <h2 className="text-4xl sm:text-5xl md:text-6xl font-bold text-white tracking-tight leading-[1.05]">
-              Production-grade
+              Review a
               <span className="block mt-1">
                 <span className="bg-gradient-to-r from-violet-300 via-blue-300 to-cyan-300 bg-clip-text text-transparent animate-gradient">
-                  AI code review
+                  GitHub Pull Request
                 </span>
               </span>
             </h2>
             <p className="text-gray-400 mt-5 text-base md:text-lg max-w-xl mx-auto leading-relaxed">
-              Paste a GitHub PR URL — get a streaming security, bugs, and quality review,
-              posted as a comment on the PR.
+              Paste a GitHub PR URL. PR Sentinel reads the diff and posts a review with security,
+              bug, and code-quality findings — as comments on the PR itself.
             </p>
 
             {/* Trust badges */}
@@ -249,7 +249,7 @@ function ReviewApp() {
 
         <footer className="relative z-10 border-t border-white/[0.06] py-8 text-center">
           <div className="max-w-4xl mx-auto px-5 sm:px-6">
-            <p className="text-xs text-gray-500">Built with Next.js · Gemini 2.5 Flash · Tailwind CSS</p>
+            <p className="text-xs text-gray-500">Built with Next.js · Google Gemini · Tailwind CSS</p>
             <p className="text-[10px] text-gray-600 mt-1.5 tracking-wider uppercase">PR Sentinel · IQ Source Hackathon 2026</p>
           </div>
         </footer>
@@ -264,37 +264,37 @@ const FEATURES = [
   {
     icon: '🔍',
     title: 'Inline comments',
-    description: 'Each finding is pinned to the exact line in the diff — like CodeRabbit, but yours.',
+    description: 'Each finding is posted as a comment on the exact line of the diff, right inside the GitHub PR.',
     color: 'from-violet-500/20 to-violet-500/0 border-violet-500/20',
   },
   {
-    icon: '🔴',
-    title: 'Risk score 0–100',
-    description: 'Every PR gets a weighted risk score based on severity, category, and size.',
+    icon: '📊',
+    title: 'Risk score (0–100)',
+    description: 'A simple number so you know at a glance whether a PR is safe, needs a careful look, or risky.',
     color: 'from-rose-500/20 to-rose-500/0 border-rose-500/20',
   },
   {
     icon: '🤖',
-    title: 'Auto-bot on push',
-    description: 'Enable auto-review on any repo. Every new PR triggers a review automatically.',
+    title: 'Auto-review (optional)',
+    description: 'Connect a repo and every new PR gets reviewed automatically when opened or updated.',
     color: 'from-cyan-500/20 to-cyan-500/0 border-cyan-500/20',
   },
   {
     icon: '💡',
-    title: 'One-click fixes',
-    description: 'GitHub suggestion blocks let reviewers apply fixes with a single click.',
+    title: 'Suggested fixes',
+    description: 'When the fix is straightforward, PR Sentinel includes the code change so you can apply it in one click on GitHub.',
     color: 'from-emerald-500/20 to-emerald-500/0 border-emerald-500/20',
   },
   {
     icon: '🔒',
-    title: 'Security-first',
-    description: 'Detects SQL injection, IDOR, XSS, secrets leaks, OWASP top-10 and more.',
+    title: '9 review categories',
+    description: 'Security, bugs, performance, best practices, accessibility, testing, dependencies, migrations, and API contracts.',
     color: 'from-orange-500/20 to-orange-500/0 border-orange-500/20',
   },
   {
-    icon: '⚡',
-    title: 'Prompt caching',
-    description: 'Gemini prompt cache cuts latency ~30% on repeated reviews. Cache stats in dashboard.',
+    icon: '🔑',
+    title: 'Bring your own key',
+    description: 'Uses your own free Gemini API key. No shared server quota, no surprise bills, your key is encrypted.',
     color: 'from-amber-500/20 to-amber-500/0 border-amber-500/20',
   },
 ];
@@ -336,63 +336,66 @@ function LandingPage() {
       {/* Hero */}
       <section className="relative z-10 max-w-5xl mx-auto px-5 sm:px-6 pt-20 sm:pt-28 pb-16 text-center">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 mb-6 rounded-full border border-violet-500/25 bg-violet-500/[0.06]">
-          <span className="relative flex h-1.5 w-1.5">
+          <span className="relative flex h-1.5 w-1.5" aria-hidden="true">
             <span className="animate-pulseRing absolute inline-flex h-full w-full rounded-full bg-violet-400" />
             <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-violet-400" />
           </span>
           <span className="text-[11px] font-semibold text-violet-200 tracking-wider uppercase">
-            Built for IQ Source Hackathon 2026
+            Open source · Hackathon project
           </span>
         </div>
 
         <h1 className="text-5xl sm:text-6xl md:text-7xl font-bold text-white tracking-tight leading-[1.03] mb-6">
           AI code review
           <span className="block mt-2 bg-gradient-to-r from-violet-300 via-blue-300 to-cyan-300 bg-clip-text text-transparent">
-            that actually ships
+            for your GitHub PRs
           </span>
         </h1>
         <p className="text-gray-400 text-lg max-w-2xl mx-auto leading-relaxed mb-10">
-          Paste a GitHub PR URL and get a streaming security, bugs, and quality review — posted
-          as inline comments directly on the PR. Free Gemini tier is enough for daily use.
+          Paste any GitHub Pull Request URL and PR Sentinel posts a review on it — comments on the
+          lines that matter, a risk score, and suggested fixes you can apply in one click.
         </p>
 
-        <div className="flex flex-wrap gap-4 justify-center">
+        <div className="flex flex-wrap gap-4 justify-center" role="group" aria-label="Get started">
           <button
+            type="button"
             onClick={handleSignIn}
             disabled={signingIn}
-            className="inline-flex items-center gap-2.5 rounded-2xl bg-gradient-to-br from-violet-500 to-blue-600 hover:from-violet-400 hover:to-blue-500 disabled:opacity-60 px-7 py-4 text-base font-semibold text-white transition shadow-xl shadow-violet-500/30 hover:shadow-violet-500/50"
+            aria-label="Sign in with GitHub to start reviewing PRs"
+            className="inline-flex items-center gap-2.5 rounded-2xl bg-gradient-to-br from-violet-500 to-blue-600 hover:from-violet-400 hover:to-blue-500 disabled:opacity-60 px-7 py-4 text-base font-semibold text-white transition shadow-xl shadow-violet-500/30 hover:shadow-violet-500/50 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2 focus:ring-offset-[var(--surface-0)]"
           >
             {signingIn ? (
               <>
-                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" aria-hidden="true">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Redirecting…
+                Redirecting to GitHub…
               </>
             ) : (
               <>
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
                 </svg>
-                Start with GitHub — it&apos;s free
+                Sign in with GitHub
               </>
             )}
           </button>
           <Link
             href="/demo"
-            className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/[0.04] hover:bg-white/[0.07] px-7 py-4 text-base font-semibold text-white transition"
+            className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/[0.04] hover:bg-white/[0.07] px-7 py-4 text-base font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-white/40"
           >
-            See a live demo →
+            See an example review
+            <span aria-hidden="true">→</span>
           </Link>
         </div>
 
-        {/* Quick stats */}
+        {/* Quick facts — concrete, verifiable */}
         <div className="mt-14 grid grid-cols-3 gap-4 max-w-lg mx-auto">
           {[
-            { value: '< 60s', label: 'Time to first review' },
-            { value: '9', label: 'Expert skill categories' },
-            { value: '0$', label: 'Server cost to you' },
+            { value: '9', label: 'Review categories' },
+            { value: 'Free', label: 'Uses Gemini free tier' },
+            { value: 'BYOK', label: 'Your key, your control' },
           ].map((stat) => (
             <div key={stat.label} className="rounded-xl border border-white/[0.08] bg-white/[0.03] py-4 px-2">
               <p className="text-2xl font-bold text-white tabular-nums">{stat.value}</p>
@@ -406,10 +409,10 @@ function LandingPage() {
       <section className="relative z-10 max-w-6xl mx-auto px-5 sm:px-6 pb-20">
         <div className="text-center mb-10">
           <h2 className="text-3xl font-bold text-white tracking-tight">
-            Everything a senior reviewer would catch
+            What you get
           </h2>
           <p className="text-gray-400 text-base mt-3 max-w-xl mx-auto">
-            PR Sentinel is not just a linter. It reasons about your code like a human reviewer would.
+            Six things PR Sentinel does for every Pull Request you point it at.
           </p>
         </div>
 
@@ -430,20 +433,67 @@ function LandingPage() {
       {/* How it works */}
       <section className="relative z-10 max-w-4xl mx-auto px-5 sm:px-6 pb-20">
         <div className="text-center mb-10">
-          <h2 className="text-3xl font-bold text-white tracking-tight">Up and running in 3 steps</h2>
+          <h2 className="text-3xl font-bold text-white tracking-tight">How it works</h2>
+          <p className="text-gray-400 text-base mt-3 max-w-xl mx-auto">
+            Three short steps. No credit card, no install.
+          </p>
         </div>
         <div className="grid sm:grid-cols-3 gap-4">
           {[
-            { step: '01', title: 'Sign in with GitHub', desc: 'OAuth — no password, no extra permissions beyond what you choose to grant.' },
-            { step: '02', title: 'Add your Gemini key', desc: 'Free from Google AI Studio. Encrypted with AES-256-GCM. Never shared.' },
-            { step: '03', title: 'Paste any PR URL', desc: 'Get a full review posted as inline comments directly on the GitHub PR.' },
+            {
+              step: '01',
+              title: 'Sign in with GitHub',
+              desc: 'Standard GitHub OAuth. PR Sentinel asks for repo access so it can read PR diffs and post review comments.',
+            },
+            {
+              step: '02',
+              title: 'Add your Gemini key',
+              desc: 'Get a free key from Google AI Studio (takes about a minute). It is encrypted before being saved.',
+            },
+            {
+              step: '03',
+              title: 'Paste a PR URL',
+              desc: 'Any GitHub PR you have read access to. PR Sentinel posts the review as comments on that PR.',
+            },
           ].map((s) => (
             <div key={s.step} className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-6">
-              <p className="text-4xl font-bold text-violet-500/40 tabular-nums mb-4">{s.step}</p>
+              <p className="text-4xl font-bold text-violet-500/40 tabular-nums mb-4" aria-hidden="true">
+                {s.step}
+              </p>
               <h3 className="text-base font-semibold text-white mb-2">{s.title}</h3>
               <p className="text-sm text-gray-400 leading-relaxed">{s.desc}</p>
             </div>
           ))}
+        </div>
+
+        {/* Honest disclosure block */}
+        <div className="mt-8 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5 sm:p-6 max-w-3xl mx-auto">
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+            Good to know
+          </p>
+          <ul className="space-y-2 text-sm text-gray-300 leading-relaxed">
+            <li className="flex gap-2.5">
+              <span className="text-gray-500 mt-0.5" aria-hidden="true">·</span>
+              <span>
+                Review quality depends on PR size and the Gemini model&apos;s output — like any
+                AI tool, treat findings as a second pair of eyes, not as ground truth.
+              </span>
+            </li>
+            <li className="flex gap-2.5">
+              <span className="text-gray-500 mt-0.5" aria-hidden="true">·</span>
+              <span>
+                Your Gemini key is used to run the review and is encrypted with AES-256-GCM
+                in storage. It is never sent to anyone other than Google&apos;s Gemini API.
+              </span>
+            </li>
+            <li className="flex gap-2.5">
+              <span className="text-gray-500 mt-0.5" aria-hidden="true">·</span>
+              <span>
+                This is a hackathon project built solo over a few days. Bugs may exist —
+                please report them on GitHub.
+              </span>
+            </li>
+          </ul>
         </div>
       </section>
 
@@ -451,21 +501,26 @@ function LandingPage() {
       <section className="relative z-10 max-w-4xl mx-auto px-5 sm:px-6 pb-24">
         <div className="rounded-2xl border border-violet-500/30 bg-gradient-to-br from-violet-500/10 via-blue-500/5 to-transparent p-10 text-center">
           <h2 className="text-3xl font-bold text-white tracking-tight mb-3">
-            Ready to review your first PR?
+            Try it on a Pull Request
           </h2>
           <p className="text-gray-400 text-base max-w-md mx-auto mb-7 leading-relaxed">
-            Sign in with GitHub, grab a free Gemini key, and you&apos;re reviewing in 60 seconds.
+            Sign in with GitHub and add a free Gemini key — that&apos;s all you need.
           </p>
-          <div className="flex flex-wrap gap-4 justify-center">
+          <div className="flex flex-wrap gap-4 justify-center" role="group" aria-label="Get started">
             <button
+              type="button"
               onClick={handleSignIn}
               disabled={signingIn}
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-violet-500 to-blue-600 hover:from-violet-400 hover:to-blue-500 disabled:opacity-60 px-6 py-3 text-sm font-semibold text-white transition shadow-lg shadow-violet-500/30"
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-violet-500 to-blue-600 hover:from-violet-400 hover:to-blue-500 disabled:opacity-60 px-6 py-3 text-sm font-semibold text-white transition shadow-lg shadow-violet-500/30 focus:outline-none focus:ring-2 focus:ring-violet-400"
             >
-              Sign in with GitHub →
+              Sign in with GitHub
+              <span aria-hidden="true">→</span>
             </button>
-            <Link href="/demo" className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] hover:bg-white/[0.07] px-6 py-3 text-sm font-semibold text-white transition">
-              Live demo (no signup)
+            <Link
+              href="/demo"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] hover:bg-white/[0.07] px-6 py-3 text-sm font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-white/40"
+            >
+              View an example review
             </Link>
           </div>
         </div>
@@ -473,7 +528,7 @@ function LandingPage() {
 
       <footer className="relative z-10 border-t border-white/[0.06] py-8 text-center">
         <div className="max-w-5xl mx-auto px-5 sm:px-6">
-          <p className="text-xs text-gray-500">Built with Next.js · Gemini 2.5 Flash · Tailwind CSS · GitHub OAuth</p>
+          <p className="text-xs text-gray-500">Built with Next.js · Google Gemini · Tailwind CSS · GitHub OAuth</p>
           <p className="text-[10px] text-gray-600 mt-1.5 tracking-wider uppercase">PR Sentinel · IQ Source Hackathon 2026</p>
         </div>
       </footer>
