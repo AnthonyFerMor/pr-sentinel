@@ -304,10 +304,17 @@ function severityWeight(severity: string): number {
 const FULL_CHUNK_MS = Number.parseInt(process.env.FULL_CHUNK_MS ?? '48000', 10);
 const LITE_CHUNK_MS = Number.parseInt(process.env.LITE_CHUNK_MS ?? '26000', 10);
 
+// When a PR is too big to fit, we re-chunk into SMALLER pieces so the single
+// chunk we analyze reliably finishes within the deadline (guaranteeing a real
+// partial review instead of nothing).
+const RECHUNK_TOKENS = Number.parseInt(process.env.RECHUNK_TOKENS ?? '16000', 10);
+
 interface BudgetPlan {
   maxChunks: number;
   thinkingBudget: number | undefined; // undefined = model default
   skills: Skill[];
+  /** If set, re-chunk the diff with this smaller per-chunk token cap. */
+  rechunkTokens?: number;
   note?: string;
 }
 
@@ -325,23 +332,29 @@ function computeBudgetPlan(opts: {
   // How many chunks can we realistically finish within the deadline? Always >= 1.
   const fitChunks = Math.max(1, Math.floor(softDeadlineMs / perChunkMs));
   const liteCap = isLite ? 2 : Number.POSITIVE_INFINITY;
-  const maxChunks = Math.min(totalChunks, fitChunks, liteCap);
+  let maxChunks = Math.min(totalChunks, fitChunks, liteCap);
 
   let thinkingBudget: number | undefined = isLite ? 1024 : undefined;
 
-  // Truncating = the PR is bigger than what fits. Lower reasoning cost on the
-  // single chunk we do run so it reliably completes inside the budget.
+  // Truncating = the PR is bigger than what fits.
   const truncating = maxChunks < totalChunks;
-  if (truncating && !isLite) thinkingBudget = 4096;
-
-  let note: string | undefined;
-  if (isLite) {
-    note = '⚡ Lite mode: reduced thinking budget, fewer chunks, security + bugs only.';
-  } else if (truncating) {
-    note = `📐 Large PR detected: analyzing the ${maxChunks} highest-priority chunk(s) of ${totalChunks} to stay within the time budget. Re-run or use Lite mode for the rest.`;
+  let rechunkTokens: number | undefined;
+  if (truncating) {
+    // Re-chunk into small pieces and analyze just ONE so it reliably completes
+    // and returns a real partial review. Drop reasoning cost too.
+    rechunkTokens = RECHUNK_TOKENS;
+    maxChunks = 1;
+    thinkingBudget = isLite ? 1024 : 2048;
   }
 
-  return { maxChunks, thinkingBudget, skills: requestedSkills, note };
+  let note: string | undefined;
+  if (truncating) {
+    note = `📐 Large PR detected: analyzing the highest-priority slice (~${RECHUNK_TOKENS.toLocaleString()} tokens) to return a focused review within the time budget. Re-run or use Lite mode for more coverage.`;
+  } else if (isLite) {
+    note = '⚡ Lite mode: reduced thinking budget, fewer chunks, security + bugs only.';
+  }
+
+  return { maxChunks, thinkingBudget, skills: requestedSkills, rechunkTokens, note };
 }
 
 /**
@@ -454,7 +467,7 @@ export async function runReview(
 
   // 4. Process diff
   emit({ type: 'status', message: '🔧 Processing diff...' });
-  const processedDiff = processDiff(files, requestedSkills.map((s) => s.id));
+  let processedDiff = processDiff(files, requestedSkills.map((s) => s.id));
   emit({ type: 'status', message: getChunkingSummary(processedDiff) });
 
   if (processedDiff.skippedFiles.length > 0) {
@@ -513,6 +526,12 @@ export async function runReview(
   const activeSkills = budget.skills;
   const thinkingBudgetOverride = budget.thinkingBudget;
   if (budget.note) emit({ type: 'status', message: budget.note });
+
+  // Re-chunk smaller for large PRs so the single analyzed chunk reliably
+  // finishes and returns a real (partial) review instead of timing out.
+  if (budget.rechunkTokens) {
+    processedDiff = processDiff(files, activeSkills.map((s) => s.id), budget.rechunkTokens);
+  }
 
   // 5. Analyze with Gemini
   emit({

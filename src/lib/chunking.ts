@@ -47,7 +47,11 @@ function adjustPriorityForSkills(
   return file.priority;
 }
 
-export function processDiff(files: DiffFile[], skillIds: string[] = []): ProcessedDiff {
+export function processDiff(
+  files: DiffFile[],
+  skillIds: string[] = [],
+  maxTokensPerChunk: number = MAX_TOKENS_PER_CHUNK,
+): ProcessedDiff {
   const skippedFiles: string[] = [];
   const analyzableFiles: DiffFile[] = [];
 
@@ -70,7 +74,9 @@ export function processDiff(files: DiffFile[], skillIds: string[] = []): Process
     0
   );
 
-  if (totalTokensEstimate <= CHUNKING_THRESHOLD) {
+  // A tighter cap (used for large PRs to make each chunk reliably finishable)
+  // forces chunking even below the global threshold.
+  if (totalTokensEstimate <= CHUNKING_THRESHOLD && maxTokensPerChunk >= MAX_TOKENS_PER_CHUNK) {
     return {
       files: analyzableFiles,
       totalTokensEstimate,
@@ -85,7 +91,7 @@ export function processDiff(files: DiffFile[], skillIds: string[] = []): Process
     };
   }
 
-  const chunks = createChunks(analyzableFiles);
+  const chunks = createChunks(analyzableFiles, maxTokensPerChunk);
 
   return {
     files: analyzableFiles,
@@ -96,7 +102,7 @@ export function processDiff(files: DiffFile[], skillIds: string[] = []): Process
   };
 }
 
-function createChunks(files: DiffFile[]): DiffChunk[] {
+function createChunks(files: DiffFile[], maxTokensPerChunk: number = MAX_TOKENS_PER_CHUNK): DiffChunk[] {
   const chunks: DiffChunk[] = [];
   let currentChunk: DiffFile[] = [];
   let currentTokens = 0;
@@ -106,7 +112,7 @@ function createChunks(files: DiffFile[]): DiffChunk[] {
     const fileTokens = estimateTokens(file.patch);
 
     // Single file exceeds limit — truncate
-    if (fileTokens > MAX_TOKENS_PER_CHUNK) {
+    if (fileTokens > maxTokensPerChunk) {
       if (currentChunk.length > 0) {
         chunks.push({
           id: chunkId++,
@@ -120,19 +126,19 @@ function createChunks(files: DiffFile[]): DiffChunk[] {
 
       const truncatedFile: DiffFile = {
         ...file,
-        patch: file.patch.substring(0, MAX_TOKENS_PER_CHUNK * CHARS_PER_TOKEN) +
+        patch: file.patch.substring(0, maxTokensPerChunk * CHARS_PER_TOKEN) +
           '\n... [TRUNCATED — file too large] ...',
       };
       chunks.push({
         id: chunkId++,
         files: [truncatedFile],
-        tokenEstimate: MAX_TOKENS_PER_CHUNK,
+        tokenEstimate: maxTokensPerChunk,
         priority: file.priority as DiffChunk['priority'],
       });
       continue;
     }
 
-    if (currentTokens + fileTokens > MAX_TOKENS_PER_CHUNK && currentChunk.length > 0) {
+    if (currentTokens + fileTokens > maxTokensPerChunk && currentChunk.length > 0) {
       chunks.push({
         id: chunkId++,
         files: [...currentChunk],
