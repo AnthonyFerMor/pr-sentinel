@@ -128,7 +128,42 @@ const k = {
   userRepos: (userId: string) => `userRepos:${userId}`,
   userStats: (userId: string) => `stats:${userId}`,
   userRecent: (userId: string) => `recent:${userId}`,
+  geminiCache: (cacheKey: string) => `geminicache:${cacheKey}`,
 };
+
+// ── Gemini explicit-cache registry ───────────────────────────
+// The Gemini cachedContent resource name is NOT a secret — it's scoped to the
+// API key that created it. We persist it in KV so every serverless instance
+// (and the cache-stats endpoint) reuses the SAME cache within its TTL, instead
+// of each cold start creating a throwaway cache that never produces a hit.
+
+export async function getGeminiCacheName(cacheKey: string): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return await redis.get<string>(k.geminiCache(cacheKey));
+}
+
+export async function setGeminiCacheName(
+  cacheKey: string,
+  name: string,
+  ttlSeconds: number,
+): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  await redis.set(k.geminiCache(cacheKey), name, { ex: Math.max(60, ttlSeconds) });
+}
+
+/** Lists currently-registered Gemini caches (best-effort; for the stats dashboard). */
+export async function listGeminiCacheNames(): Promise<{ cacheKey: string; name: string }[]> {
+  const redis = getRedis();
+  if (!redis) return [];
+  const keys = await redis.keys(k.geminiCache('*'));
+  if (!keys.length) return [];
+  const names = await Promise.all(keys.map((key) => redis.get<string>(key)));
+  return keys
+    .map((key, i) => ({ cacheKey: key.replace('geminicache:', ''), name: names[i] ?? '' }))
+    .filter((entry) => entry.name);
+}
 
 // ── User config (geminiApiKey + githubPAT) ───────────────────
 

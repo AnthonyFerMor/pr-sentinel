@@ -3,6 +3,8 @@
 // ============================================================
 
 import { GoogleGenAI } from '@google/genai';
+import { createHash } from 'node:crypto';
+import { getGeminiCacheName, setGeminiCacheName } from './storage';
 import {
   buildCachePrimer,
   buildSystemPrompt,
@@ -268,13 +270,33 @@ async function ensureCache(modelName: string, skills: Skill[], userApiKey?: stri
   const client = getClient(userApiKey);
   const now = Date.now();
   const skillsKey = skillsCacheKey(skills);
-  const cacheKey = `${modelName}::${skillsKey}`;
+  // The cache is scoped to the API key that created it (Gemini rejects a cache
+  // used with a different project key), so the cache key includes a fingerprint
+  // of the key — keeps caches isolated per user in the BYOK model.
+  const keyFp = userApiKey
+    ? createHash('sha256').update(userApiKey).digest('hex').slice(0, 10)
+    : 'env';
+  const cacheKey = `${modelName}::${skillsKey}::${keyFp}`;
   const existing = cacheByModel.get(cacheKey);
   const lastFailure = cacheFailureByModel.get(cacheKey) ?? 0;
 
   if (existing && now - existing.createdAt < CACHE_TTL_MS) {
-    console.log(`Reusing Gemini cache for ${cacheKey}: ${existing.name}`);
+    console.log(`Reusing Gemini cache (in-memory) for ${cacheKey}: ${existing.name}`);
     return existing.name;
+  }
+
+  // Cross-instance reuse: a warm cache created by another serverless instance
+  // is recorded in KV. Reuse it so the request actually gets a cache hit
+  // instead of paying to recreate the cache on every cold start.
+  try {
+    const shared = await getGeminiCacheName(cacheKey);
+    if (shared) {
+      cacheByModel.set(cacheKey, { name: shared, createdAt: now });
+      console.log(`Reusing Gemini cache (KV) for ${cacheKey}: ${shared}`);
+      return shared;
+    }
+  } catch (err) {
+    console.warn(`[cache] KV lookup failed for ${cacheKey} (continuing):`, err);
   }
 
   if (lastFailure && now - lastFailure < CACHE_FAILURE_COOLDOWN_MS) {
@@ -307,6 +329,13 @@ async function ensureCache(modelName: string, skills: Skill[], userApiKey?: stri
 
     cacheByModel.set(cacheKey, { name: cache.name, createdAt: now });
     cacheFailureByModel.delete(cacheKey);
+    // Publish to KV so other serverless instances reuse this cache (TTL slightly
+    // under the Gemini cache's 1h lifetime so we never hand out an expired name).
+    try {
+      await setGeminiCacheName(cacheKey, cache.name, Math.floor(CACHE_TTL_MS / 1000));
+    } catch (err) {
+      console.warn(`[cache] KV publish failed for ${cacheKey} (non-fatal):`, err);
+    }
     console.log(`Gemini cache created for ${cacheKey}: ${cache.name}`);
     return cache.name;
   } catch (error) {
