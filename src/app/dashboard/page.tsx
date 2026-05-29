@@ -113,14 +113,9 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {data && !data.storageAvailable && (
-            <div className="mb-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
-              ⚠ Persistent storage (Vercel KV) is not configured — stats won&apos;t accumulate across
-              sessions. Provision Upstash Redis in your environment to enable analytics.
-            </div>
-          )}
-
-          {empty ? (
+          {data && !data.storageAvailable ? (
+            <StorageDisabledState />
+          ) : empty ? (
             <EmptyState />
           ) : (
             <>
@@ -225,6 +220,44 @@ export default function DashboardPage() {
         </div>
       </main>
     </>
+  );
+}
+
+function StorageDisabledState() {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-gray-900/60 backdrop-blur-xl p-12 text-center">
+      <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500/20 to-blue-500/10 border border-cyan-500/20">
+        <svg className="w-7 h-7 text-cyan-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12a7 7 0 0114 0M5 12a7 7 0 0014 0M5 12H3m18 0h-2M12 5V3m0 18v-2" />
+          <ellipse cx="12" cy="6" rx="7" ry="3" strokeWidth={1.5} />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 6v12c0 1.66 3.13 3 7 3s7-1.34 7-3V6" />
+        </svg>
+      </div>
+      <h3 className="text-white text-lg font-semibold tracking-tight">Analytics are off</h3>
+      <p className="text-sm text-gray-400 mt-2 max-w-md mx-auto leading-relaxed">
+        The dashboard needs persistent storage (Vercel KV / Upstash Redis) to track your reviews
+        over time. Reviews still work without it — they just aren&apos;t recorded here.
+      </p>
+      <p className="text-xs text-gray-500 mt-3 max-w-sm mx-auto leading-relaxed">
+        To enable: add an Upstash Redis integration in your Vercel project, then redeploy.
+      </p>
+      <div className="mt-6 flex flex-wrap gap-3 justify-center">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-violet-500 to-blue-600 hover:from-violet-400 hover:to-blue-500 px-4 py-2.5 text-sm font-semibold text-white transition shadow-lg shadow-violet-500/30"
+        >
+          Run a review
+        </Link>
+        <a
+          href="https://vercel.com/integrations/upstash"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] hover:bg-white/[0.07] px-4 py-2.5 text-sm font-semibold text-white transition"
+        >
+          Set up Upstash →
+        </a>
+      </div>
+    </div>
   );
 }
 

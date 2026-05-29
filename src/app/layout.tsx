@@ -27,6 +27,9 @@ export const metadata: Metadata = {
       'Paste a GitHub PR URL. Get inline review comments posted on the PR. Powered by Google Gemini — free API key required.',
   },
   robots: 'index, follow',
+  // App is English-only. Stop browser auto-translate from mangling the brand
+  // name ("PR Sentinel" → "Centinela de Relaciones Públicas") and tech terms.
+  other: { google: 'notranslate' },
 };
 
 export default function RootLayout({
@@ -35,8 +38,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark">
-      <body className="antialiased bg-gray-950 text-white font-sans">
+    <html lang="en" className="dark" translate="no">
+      <body className="antialiased bg-gray-950 text-white font-sans notranslate">
         <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-violet-600 focus:text-white focus:px-4 focus:py-2 focus:rounded-br-lg">
           Skip to main content
         </a>
