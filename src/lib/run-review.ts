@@ -639,7 +639,10 @@ export async function runReview(
 
     const chunkCacheInfo = await getCacheInfo();
     cacheInfo = {
-      cacheHit: cacheInfo.cacheHit && chunkCacheInfo.cacheHit,
+      // A review is a cache hit if ANY chunk reused the cached primer. (The old
+      // AND-from-a-false-seed could never become true, so the metadata always
+      // reported "Cache Hit: No" even when the cache was reused.)
+      cacheHit: cacheInfo.cacheHit || chunkCacheInfo.cacheHit,
       cachedTokens: cacheInfo.cachedTokens + chunkCacheInfo.cachedTokens,
       totalTokens: cacheInfo.totalTokens + chunkCacheInfo.totalTokens,
     };
