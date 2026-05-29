@@ -1,301 +1,207 @@
-# 🛡️ PR Sentinel — AI-Powered Code Review Agent
+# PR Sentinel — AI Code Review for GitHub PRs
 
-> Automated pull request reviews powered by **Gemini 3.5 Flash** with context caching, streaming, and intelligent diff analysis.
+> Paste a GitHub Pull Request URL. PR Sentinel reads the diff and posts a review — security findings, bugs, code quality notes, and suggested fixes — as inline comments directly on the PR.
 
-**Deploy (Vercel):** `https://<your-app>.vercel.app`  
-**Repo (public):** `https://github.com/<you>/pr-sentinel`
+**Live demo (no signup):** [/demo](https://pr-sentinel-n48t7nj51-anthonyfermors-projects.vercel.app/demo)  
+**App:** [pr-sentinel.vercel.app](https://pr-sentinel-n48t7nj51-anthonyfermors-projects.vercel.app)
 
----
-
-## ✨ What It Does
-
-Paste a **GitHub PR URL** → Get an **instant, thorough code review** that finds:
-
-- 🔒 **Security vulnerabilities** — SQL injection, XSS, CSRF, exposed secrets
-- 🐛 **Bugs & correctness issues** — logic errors, race conditions, null crashes
-- ⚡ **Performance problems** — N+1 queries, memory leaks, blocking I/O
-- 🧹 **Code quality issues** — code smells, DRY violations, missing types
-- 💡 **Actionable suggestions** — concrete fixes with code examples
-
-The review is **streamed in real-time** and **posted as a comment** on the PR itself.
+Built for IQ Source Hackathon 2026.
 
 ---
 
-## 🏗️ Architecture
+## What it does
+
+1. You paste a GitHub PR URL (or enable auto-review on a repo)
+2. PR Sentinel fetches the diff and sends it to Gemini
+3. Findings are posted as **inline review comments** on the exact lines that have issues
+4. Each finding includes: severity, category, description, impact, and a suggested fix
+5. When the fix is mechanical, a **GitHub suggestion block** is included so the reviewer can apply it in one click
+
+### Review categories (9 skills)
+
+| Skill | What it catches |
+|-------|----------------|
+| 🔒 Security | SQL injection, IDOR, XSS, secrets in code, OWASP issues |
+| 🐛 Bugs | Logic errors, null dereferences, race conditions |
+| ⚡ Performance | N+1 queries, missing indexes, blocking I/O |
+| ✅ Best practices | DRY violations, missing types, naming |
+| ♿ Accessibility | Missing ARIA labels, keyboard navigation |
+| 🧪 Testing | Untested branches, missing assertions |
+| 📦 Dependencies | Outdated or vulnerable packages |
+| 🗄️ Migrations | Backwards-incompatible DB changes |
+| 🔌 API contracts | Breaking changes in public APIs |
+
+### Risk score
+
+Every PR gets a risk score from 0 to 100, calculated from the severity and category of findings plus the PR size. Shown as a badge: Safe → Review → Risky → Blocked.
+
+### Auto-bot
+
+Enable auto-review on any repo from the **Auto-bot** page. PR Sentinel installs a webhook and reviews every PR automatically when it's opened or updated. Uses your GitHub PAT for the webhook and your Gemini key for the AI.
+
+### Conversational replies
+
+Mention `@pr-sentinel` in a PR comment and it replies in context, answering questions about its own findings or the diff.
+
+---
+
+## Architecture
 
 ```
-┌─ GitHub OAuth
-│  └─ User login → JWT session + GitHub token
-├─ Next.js Frontend
-│  ├─ Home: paste PR URL → manual review
-│  ├─ Settings: manage Gemini API key (encrypted cookie)
-│  └─ Lite mode toggle: ⚡ (security+bugs only) or 🔬 (all skills)
-├─ /api/review (SSE stream)
-│  └─ Per-user Gemini key + GitHub token
-├─ GitHub Webhook (pull_request / issue_comment / pull_request_review_comment)
-│  ├─ Auto-review on PR open/update
-│  └─ Bot replies to @pr-sentinel mentions
-└─ Review pipeline
-   ├─ Fetch PR diff → Chunk if > 50K tokens
-   ├─ Gemini 3.5 Flash with context caching
-   ├─ 6 review skills: security, bugs, performance, code quality, accessibility, testing
-   └─ Post comment + re-verification summary on re-review
+User browser
+  ├── / (landing or review form, depends on auth state)
+  ├── /demo — public, no login, pre-baked review example
+  ├── /dashboard — per-user stats (reviews, findings, time saved)
+  ├── /repositories — auto-bot management
+  └── /settings — Gemini key + GitHub PAT + review preferences
+
+API
+  ├── /api/review — POST → SSE stream of review progress + result
+  ├── /api/settings — GET/POST per-user config from Upstash KV
+  ├── /api/stats — aggregated review statistics
+  ├── /api/github/repos — list user's GitHub repos
+  ├── /api/repos/enable|disable — create/delete GitHub webhooks
+  └── /api/webhooks/github — receives pull_request, issue_comment,
+                             pull_request_review_comment events
+
+Storage
+  ├── Upstash Redis (Vercel KV) — encrypted user configs, review stats
+  └── NextAuth JWT cookie — GitHub session token
+
+AI pipeline (src/lib/)
+  ├── parser.ts — parse GitHub PR URL
+  ├── github.ts — fetch diff, post inline review, post comments
+  ├── gemini.ts — call Gemini with explicit context caching
+  ├── prompt.ts — build system prompt + per-finding formatters
+  ├── patch-lines.ts — validate Gemini's line numbers against the real diff
+  ├── risk-score.ts — weighted 0-100 score
+  ├── run-review.ts — orchestrate the full review pipeline
+  └── conversational.ts — generate replies to @pr-sentinel mentions
 ```
 
-### Key Technical Decisions
+### Key decisions
 
-| Decision | Rationale |
-|----------|-----------|
-| **Next.js App Router** | Full-stack with auth + real-time |
-| **NextAuth.js v5** | GitHub OAuth, JWT sessions, no DB needed |
-| **Per-user credentials** | Gemini key in encrypted httpOnly cookie, GitHub token from OAuth |
-| **SSE (Server-Sent Events)** | Real-time streaming without WebSocket |
-| **Webhook events** | Auto-review + bot replies on PR events |
-| **Lite mode** | 1024 token budget, 2 chunks max, security+bugs only |
-| **Structured Outputs** | JSON schema = consistent review format |
-| **Priority-based Chunking** | Source code first, skip binary/lock/generated |
-| **`@google/genai` SDK** | Official SDK with context caching |
-
----
-
-## 🚀 Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Framework | Next.js (App Router) |
-| Language | TypeScript |
-| AI Model | Gemini 3.5 Flash via `@google/genai` |
-| GitHub Integration | Octokit |
-| Styling | Tailwind CSS v4 |
-| Deployment | Vercel (Hobby tier) |
+| Decision | Why |
+|----------|-----|
+| Per-user Gemini key (BYOK) | No shared quota → no server cost. Key encrypted AES-256-GCM before storage. |
+| GitHub OAuth token for reading | Users already have one from sign-in. No extra token needed just to read diffs. |
+| GitHub PAT for auto-bot | OAuth tokens can expire. Webhooks need a stable credential. PAT is optional — only for auto-bot. |
+| SSE (Server-Sent Events) | Real-time streaming without WebSockets. Works on Vercel serverless. |
+| Inline review comments (GitHub Reviews API) | Comments land on the exact diff line, not at the bottom of the PR. |
+| Upstash Redis for config | The webhook handler runs server-side with no user cookie. KV is the only way to look up per-user credentials. |
+| Priority-based file chunking | Source code reviewed first, generated/lock/binary files skipped. Keeps token use focused. |
+| Gemini context caching | System prompt + skill rubric cached for 1 hour. ~30% fewer tokens on repeated reviews. |
 
 ---
 
-## 🔧 Run Locally
+## Setup
 
-### Prerequisites
-- Node.js 18+
-- npm
-- A GitHub OAuth App (created locally or on GitHub)
-- A [Gemini API key](https://ai.google.dev) (free tier, optional — can use server default or per-user)
-
-### Setup
+### 1. Clone and install
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/AnthonyFerMor/pr-sentinel.git
+git clone https://github.com/<you>/pr-sentinel
 cd pr-sentinel
-
-# 2. Install dependencies
 npm install
+```
 
-# 3. Configure environment variables
-cp .env.example .env.local
-# Edit .env.local (see table below)
+### 2. Environment variables
 
-# 4. Run the dev server
+Create `.env.local`:
+
+```env
+# NextAuth
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=<random 32+ char string>
+
+# GitHub OAuth App (create at github.com/settings/developers)
+GITHUB_CLIENT_ID=<your client id>
+GITHUB_CLIENT_SECRET=<your client secret>
+
+# Webhook secret (used to verify GitHub webhook payloads)
+GITHUB_WEBHOOK_SECRET=<random string>
+
+# Optional: Vercel KV / Upstash Redis (for stats + auto-bot)
+KV_REST_API_URL=<upstash url>
+KV_REST_API_TOKEN=<upstash token>
+```
+
+Each user provides their own Gemini key at `/settings`. There is no server-side Gemini key.
+
+### 3. GitHub OAuth App
+
+- Homepage URL: `http://localhost:3000`
+- Callback URL: `http://localhost:3000/api/auth/callback/github`
+
+### 4. Run locally
+
+```bash
 npm run dev
 ```
 
-Visit [http://localhost:3000](http://localhost:3000) → redirects to `/login` → click "Sign in with GitHub".
+### 5. Deploy to Vercel
 
-### Environment Variables
+```bash
+npx vercel deploy --prod
+```
 
-**Authentication (required for multi-user):**
-
-| Variable | Where to Get |
-|----------|-------------|
-| `NEXTAUTH_SECRET` | Generate: `openssl rand -base64 32` |
-| `NEXTAUTH_URL` | `http://localhost:3000` (dev) or `https://<your-app>.vercel.app` (prod) |
-| `GITHUB_CLIENT_ID` | GitHub → Settings → Developer Settings → OAuth Apps → Create New |
-| `GITHUB_CLIENT_SECRET` | (same location as above) |
-
-**Review & API (optional defaults, users can override in Settings):**
-
-| Variable | Optional? | Default | Where to Get |
-|----------|-----------|---------|-------------|
-| `GEMINI_API_KEY` | ✅ Yes | None (users must set in Settings) | [ai.google.dev](https://ai.google.dev) |
-| `GEMINI_MODEL` | ✅ Yes | `gemini-3.5-flash` | (leave as-is) |
-| `GEMINI_FALLBACK_MODELS` | ✅ Yes | `gemini-2.5-flash` | (leave as-is) |
-| `PR_SENTINEL_GITHUB_TOKEN` | ✅ Yes | None (OAuth token used instead) | Fine-grained PAT only if needed |
-
-**Webhooks (optional):**
-
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_WEBHOOK_SECRET` | Generate: `openssl rand -base64 32`, set in GitHub repo webhook settings |
-| `CRON_SECRET` | Generate: `openssl rand -base64 32`, set in Vercel Cron job |
-| `CRON_REPOS` | Comma-separated `owner/repo` for scheduled reviews |
-
-### GitHub OAuth App Setup (Local)
-
-1. Go to **GitHub → Settings → Developer Settings → OAuth Apps → New OAuth App**
-2. Fill in:
-   - **Application name:** PR Sentinel
-   - **Homepage URL:** `http://localhost:3000`
-   - **Authorization callback URL:** `http://localhost:3000/api/auth/callback/github`
-3. Copy **Client ID** and **Client Secret** into `.env.local`
-4. Run `npm run dev` and login
+Set all env vars in the Vercel dashboard. For the OAuth App, update the URLs to your production domain.
 
 ---
 
-## 🚀 Deploy (Vercel)
+## Project structure
 
-1. Push branch to GitHub (already done: `feat/phase-3-automation`)
-2. Import repo into Vercel
-3. Set Vercel Environment Variables:
-   - `NEXTAUTH_SECRET` (generate locally)
-   - `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` (from GitHub OAuth App)
-   - `GEMINI_API_KEY` (fallback for webhook reviews; users set personal key in Settings)
-   - `NEXTAUTH_URL` (your Vercel app URL, e.g., `https://pr-sentinel.vercel.app`)
-4. Deploy
-5. Create GitHub OAuth App with callback URL = `https://pr-sentinel.vercel.app/api/auth/callback/github`
-6. Set up webhook: GitHub repo → Settings → Webhooks → Add
-   - Payload URL: `https://pr-sentinel.vercel.app/api/webhooks/github`
-   - Events: `Pull requests`, `Issue comments`, `Pull request review comments`
-   - Secret: same as `GITHUB_WEBHOOK_SECRET` in Vercel env
-
-## 🎯 Features
-
-### Authentication & Multi-User
-- ✅ GitHub OAuth login (no password storage)
-- ✅ Per-user Gemini API key (encrypted httpOnly cookie)
-- ✅ Auth middleware gates `/`, `/settings`, `/repositories`
-- ✅ Settings page to manage API keys
-- ✅ Public webhook/cron endpoints use server default keys
-
-### Core Review
-- ✅ End-to-end PR review from URL to posted comment
-- ✅ Real-time SSE streaming of AI analysis
-- ✅ Gemini 3.5 Flash with explicit context caching
-- ✅ Cache hit/miss visible in UI dashboard
-- ✅ Structured JSON output via response schema
-- ✅ **6 review skills:** security, bugs, performance, code quality, accessibility, testing (all default ON)
-- ✅ **Lite mode** (⚡): 1024 token budget, 2 chunks, security+bugs only
-
-### Automation & Bot
-- ✅ **GitHub Webhook:** auto-review on PR open/update/new commits
-- ✅ **Conversational bot:** replies to @pr-sentinel mentions in PR comments
-- ✅ **Re-verification summary:** posts update notification when review is refreshed on new commits
-- ✅ **Self-loop guard:** bot ignores its own comments (prevents infinite reply loops)
-
-### Smart Diff Handling
-- ✅ Priority-based file analysis (source > config > assets)
-- ✅ Automatic chunking for PRs > 50K tokens
-- ✅ Skip binary files, lock files, and generated code
-- ✅ Single-file truncation for extremely large files
-
-### UI/UX
-- ✅ Dark mode design with glassmorphism
-- ✅ Real-time activity log during analysis
-- ✅ Severity-coded finding cards
-- ✅ Cache hit badge with token metrics
-- ✅ Mode toggle: Full (deep) ↔ Lite (fast)
-- ✅ Skill selector with all 6 skills
-- ✅ Responsive (mobile-friendly)
-- ✅ Error handling with retry buttons
+```
+src/
+  app/
+    page.tsx          — landing (unauthenticated) or review form (authenticated)
+    demo/page.tsx     — public demo with pre-baked findings
+    dashboard/page.tsx
+    repositories/page.tsx
+    settings/page.tsx
+    login/page.tsx
+    api/
+      review/route.ts
+      settings/route.ts
+      stats/route.ts
+      webhooks/github/route.ts
+      repos/enable|disable|status/route.ts
+      github/repos|pulls|comment/route.ts
+  components/
+    Header.tsx
+    ReviewForm.tsx
+    ReviewStream.tsx
+    SkillSelector.tsx
+    OnboardingBanner.tsx
+    Aurora.tsx / Logo.tsx
+  lib/
+    auth.ts, github.ts, gemini.ts, prompt.ts
+    run-review.ts, patch-lines.ts, risk-score.ts
+    conversational.ts, review-diff.ts
+    storage.ts, session.ts, parser.ts, types.ts
+```
 
 ---
 
-## 🧪 Testing Locally
+## Cost
 
-1. **Start dev server:**
-   ```bash
-   npm run dev
-   ```
-
-2. **Sign in:**
-   - Visit [http://localhost:3000](http://localhost:3000)
-   - Click "Sign in with GitHub"
-   - Authorize OAuth (uses your GitHub account)
-
-3. **Configure API key (optional):**
-   - Go to [/settings](http://localhost:3000/settings)
-   - Paste your Gemini API key (from ai.google.dev)
-   - Save (encrypted in cookie)
-
-4. **Review a PR:**
-   - Paste a GitHub PR URL on the home page
-   - Toggle **Lite mode** (⚡) to test faster reviews
-   - Select skills (all default ON)
-   - Click Review
-
-5. **Test webhook (requires public tunnel):**
-   ```bash
-   # In another terminal, expose local server
-   ngrok http 3001
-   ```
-   - GitHub repo → Settings → Webhooks → Add webhook
-   - Payload URL: `https://<your-ngrok-url>/api/webhooks/github`
-   - Events: Pull requests, Issue comments, Pull request review comments
-   - Secret: random (set in `.env.local` as `GITHUB_WEBHOOK_SECRET`)
-   - Create a test PR → bot auto-reviews
+Everything runs on free tiers:
+- Gemini API: each user brings their own key (free tier: 1,500 req/day)
+- Vercel: Hobby (free)
+- Upstash Redis: free tier (10,000 req/day)
+- GitHub: OAuth app + PAT (free)
 
 ---
 
-## 📊 Context Caching Verification
+## Limitations
 
-Cache hits are visible in:
-
-1. **UI Badge** — Green "Cache Hit" badge with token counts
-2. **Server Logs** — `📊 Usage — Cached: N, Total: M, Hit: true`
-3. **API Endpoint** — `GET /api/cache/stats` returns cache metrics
-
----
-
-## 🎯 Testing with Notesy PRs
-
-Test suite: https://github.com/iqsource/hackathon-2026-05-notesy
-
-Paste one of the test PR URLs into PR Sentinel to verify:
-- Review finds intentional bugs
-- Findings are accurate
-- Formatting is clean
-- Performance is acceptable
+- Review quality depends on Gemini's output — treat findings as a second opinion, not ground truth
+- Very large PRs (>50K tokens) are chunked; some context between files may be lost
+- Auto-bot requires a GitHub PAT with webhook + repo permissions
+- Inline comments require the PR to be a proper diff (not a force-push that squashed history)
+- This is a hackathon project built in a few days. There will be edge cases.
 
 ---
 
-## 📝 Cost
-
-**$0** — Everything runs on free tiers:
-- Gemini API: 1500 req/day free
-- Vercel: Hobby tier free
-- GitHub: OAuth + PAT free
-
----
-
-## 📄 License
+## License
 
 MIT
-
----
-
-## 🔍 Debugging
-
-**Local dev logs:**
-```bash
-npm run dev
-# Tail server output for [webhook], [conversational], [review] prefixes
-```
-
-**Build verification:**
-```bash
-npm run build
-# Checks TypeScript + Next.js compilation
-```
-
-**Environment check:**
-```bash
-cat .env.local | grep -E "NEXTAUTH|GEMINI|GITHUB"
-# Verify keys are set (values hidden)
-```
-
-**Webhook test (after deployment):**
-```bash
-curl -X POST https://<app-url>/api/webhooks/github \
-  -H "x-github-event: ping" \
-  -H "x-hub-signature-256: sha256=unused" \
-  -H "Content-Type: application/json" \
-  -d '{"zen":"test"}'
-# Should return 200 OK with {"ok":true,"pong":true}
-```
