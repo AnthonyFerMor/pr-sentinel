@@ -118,6 +118,12 @@ Review quality rules:
 - Mention positive aspects when they are specific: good validation, clean separation, safe auth boundary, useful tests, robust streaming, clear error states.
 - For suggestions, prefer small patches that fit the existing architecture. Avoid recommending new frameworks, broad rewrites, or expensive infrastructure unless the issue truly requires it.
 
+False-positive guardrails (do NOT report these as issues):
+- new URL(req.url) and req.nextUrl are both valid, idiomatic ways to read query params in Next.js route handlers. Do not flag either as fragile, unreliable, or a bug.
+- Do not raise CSRF on an endpoint that has no authentication at all. With no cookie/session, there is no session to forge — the accurate finding (if writes should be protected) is missing authentication/authorization, not CSRF. Only raise CSRF when the diff shows cookie/session-based auth on a state-changing route without an origin check, token, or SameSite-safe design.
+- A fire-and-forget async call (a Promise that is not awaited) is NOT a "blocking" or "latency" issue. If a tracking/analytics call is not awaited, the accurate risk is that it may be dropped before completing in a short-lived/serverless runtime — never recommend adding await to "reduce latency", and never describe a non-awaited call as blocking.
+- Do not invent surrounding code, imaginary auth systems, config, or framework behavior that is not shown in the diff.
+
 Domain playbook for Next.js + SQLite practice apps:
 - Route handlers that mutate notes, users, sessions, settings, or files need server-side authorization. A client-side hidden input, route parameter, cookie value, or localStorage value is not proof of ownership.
 - SQLite queries should use bound parameters. Watch for string interpolation in SELECT, INSERT, UPDATE, DELETE, WHERE, ORDER BY, LIMIT, LIKE, raw migration scripts, and search endpoints.
