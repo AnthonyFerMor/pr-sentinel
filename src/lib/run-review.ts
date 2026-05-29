@@ -592,12 +592,13 @@ export async function runReview(
     }
   }
 
-  // 9. Track stats (best-effort, never fails the review).
-  if (options.userId) {
-    await trackStats(options.userId, review, metadata, prInfo, published.commentUrl);
-  }
-
+  // 9. Emit complete FIRST so the client gets results even if stats save is slow.
   emit({ type: 'complete', data: review });
+
+  // 10. Track stats (best-effort, fire-and-forget — never delays the stream).
+  if (options.userId) {
+    void trackStats(options.userId, review, metadata, prInfo, published.commentUrl);
+  }
 
   return { review, skipped: false, ...published };
 }
