@@ -308,6 +308,9 @@ const LITE_CHUNK_MS = Number.parseInt(process.env.LITE_CHUNK_MS ?? '26000', 10);
 // chunk we analyze reliably finishes within the deadline (guaranteeing a real
 // partial review instead of nothing).
 const RECHUNK_TOKENS = Number.parseInt(process.env.RECHUNK_TOKENS ?? '16000', 10);
+// Any single chunk larger than this is considered too slow to finish reliably,
+// so we re-chunk even if the chunk COUNT already fits.
+const SAFE_CHUNK_TOKENS = Number.parseInt(process.env.SAFE_CHUNK_TOKENS ?? '20000', 10);
 
 interface BudgetPlan {
   maxChunks: number;
@@ -336,8 +339,14 @@ function computeBudgetPlan(opts: {
 
   let thinkingBudget: number | undefined = isLite ? 1024 : undefined;
 
-  // Truncating = the PR is bigger than what fits.
-  const truncating = maxChunks < totalChunks;
+  // Largest chunk we'd actually analyze (token-wise). A chunk this big may not
+  // finish in time even if the COUNT fits — so size matters too.
+  const analyzedChunks = processedDiff.chunks.slice(0, maxChunks);
+  const largestChunkTokens = analyzedChunks.reduce((m, c) => Math.max(m, c.tokenEstimate), 0);
+
+  // Truncate when the PR has more chunks than fit, OR any analyzed chunk is too
+  // big to finish reliably within the per-chunk budget.
+  const truncating = maxChunks < totalChunks || largestChunkTokens > SAFE_CHUNK_TOKENS;
   let rechunkTokens: number | undefined;
   if (truncating) {
     // Re-chunk into small pieces and analyze just ONE so it reliably completes
