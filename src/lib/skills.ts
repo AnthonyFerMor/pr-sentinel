@@ -25,7 +25,8 @@ export const SKILLS: Skill[] = [
     defaultEnabled: true,
     promptFragment: `### 🔴 SECURITY ISSUES (Critical)
 - **SQL Injection**: string interpolation/concatenation in SQL (template literals, +, .concat). Look for: WHERE, ORDER BY, LIKE, LIMIT, INSERT VALUES, column names built from user input. Check that EVERY query parameter uses ? placeholders or parameterized queries.
-- **XSS**: user data rendered as HTML without escaping. Look for: dangerouslySetInnerHTML, innerHTML, document.write, React raw HTML, template literal HTML, markdown rendering of user content.
+- **XSS**: user data rendered as HTML without escaping. Look for: dangerouslySetInnerHTML, innerHTML, document.write, React raw HTML, markdown rendering of user content, AND server-side HTML built by string interpolation/concatenation — \`res.send(\`...\${x}...\`)\`, \`res.write\`, returning an HTML \`Response\` whose body embeds a value, or any HTML template string with \`\${value}\` that is not passed through an escaper/sanitizer.
+- **Stored / second-order XSS**: a value read back from the database, cache, or any store is STILL untrusted if a user could have written it earlier (e.g. a note title/body, comment, username). Trace the write path: if untrusted input is persisted raw and later interpolated into HTML, it is stored XSS even though the read query is parameterized. Parameterized SQL prevents SQL injection ONLY — it does NOTHING to prevent XSS at the HTML output sink. Evaluate the SQL read and the HTML write as two separate trust boundaries.
 - **CSRF**: state-changing endpoints (POST/PUT/DELETE) that rely only on cookies for auth without CSRF token, SameSite attribute, or origin check.
 - **Auth/authz bypass**: endpoints that trust client-supplied IDs (userId, noteId, ownerId) without verifying ownership server-side. IDOR vulnerabilities.
 - **Secrets exposure**: API keys, tokens, passwords, database URLs in code, logs, error messages, or NEXT_PUBLIC_ env vars.
@@ -34,7 +35,8 @@ export const SKILLS: Skill[] = [
 - **Unsafe redirects**: redirect URLs built from user input without allowlist.`,
     rubricFragment: `Security checklist:
 - Injection: SQL, shell, template, LDAP, NoSQL, path traversal, unsafe dynamic import, unsafe eval, unsafe deserialization.
-- Web security: XSS through raw HTML, unsafe markdown rendering, missing output encoding, unsafe redirects, CSRF on state-changing routes, missing secure cookie flags, weak CORS, missing origin checks.
+- Web security: XSS through raw HTML, server-side HTML built by string interpolation (\`res.send\`/\`res.write\`/HTML template strings with \`\${value}\`), unsafe markdown rendering, missing output encoding, unsafe redirects, CSRF on state-changing routes, missing secure cookie flags, weak CORS, missing origin checks.
+- SQL-safety is NOT XSS-safety: a parameterized read query (\`WHERE id = ?\`) does not make the response safe to embed in HTML. When a new endpoint both queries the DB AND emits HTML, evaluate the HTML sink separately, and never list "uses parameterized queries" as a positive while an unescaped HTML interpolation of that same data exists in the diff.
 - Auth and authorization: endpoints that trust client-supplied user IDs, tenant IDs, repository names, roles, or branch names; missing permission checks before writes; confused-deputy flows; inadequate OAuth/PAT scope handling.
 - Secrets: API keys, tokens, passwords, private keys, webhook secrets, database URLs, or signed URLs committed or logged. Never print secrets in suggestions.
 - For security findings, ALWAYS include the CWE ID.`,
