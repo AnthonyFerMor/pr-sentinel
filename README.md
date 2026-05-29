@@ -2,8 +2,8 @@
 
 > Paste a GitHub Pull Request URL. PR Sentinel reads the diff and posts a review — security findings, bugs, code quality notes, and suggested fixes — as inline comments directly on the PR.
 
-**Live demo (no signup):** [/demo](https://pr-sentinel-n48t7nj51-anthonyfermors-projects.vercel.app/demo)  
-**App:** [pr-sentinel.vercel.app](https://pr-sentinel-n48t7nj51-anthonyfermors-projects.vercel.app)
+**App:** [pr-sentinel-sigma.vercel.app](https://pr-sentinel-sigma.vercel.app)  
+**Live demo (no signup):** [/demo](https://pr-sentinel-sigma.vercel.app/demo)
 
 Built for IQ Source Hackathon 2026.
 
@@ -90,7 +90,7 @@ AI pipeline (src/lib/)
 | Inline review comments (GitHub Reviews API) | Comments land on the exact diff line, not at the bottom of the PR. |
 | Upstash Redis for config | The webhook handler runs server-side with no user cookie. KV is the only way to look up per-user credentials. |
 | Priority-based file chunking | Source code reviewed first, generated/lock/binary files skipped. Keeps token use focused. |
-| Gemini context caching | System prompt + skill rubric cached for 1 hour. ~30% fewer tokens on repeated reviews. |
+| Gemini context caching | The stable ~4K-token review rubric is sent as a fixed request **prefix** so Gemini's **implicit caching** can reuse it across reviews. `cachedContentTokenCount` is surfaced in logs, the PR comment, and `/api/cache/stats`. We deliberately use implicit (not explicit `caches.create`): the **free tier caps explicit cache storage at 0 tokens** (`limit=0`), so explicit caching 429s on free keys. An explicit-cache path exists behind `GEMINI_EXPLICIT_CACHE=true` for paid keys. |
 
 ---
 
@@ -192,12 +192,23 @@ Everything runs on free tiers:
 
 ---
 
+## Verifying context caching
+
+Three independent surfaces report `cachedContentTokenCount` from Gemini:
+
+- **PR comment metadata table** — every posted review includes `Model | Cache Hit | Cached Tokens | Total Tokens`.
+- **Runtime logs** — every Gemini stream chunk logs `Gemini usage - Model: X, Cached: N, Total: M, Hit: true|false`. Visible in `vercel logs`.
+- **Live endpoint** — `GET /api/cache/stats` returns `cacheMode`, `cacheHitCount`, `cacheMissCount`, and `lastUsage`.
+
+Honest free-tier note: implicit hits depend on consecutive requests using the **same model** within the implicit-cache window. `gemini-3.5-flash` rate-limits aggressively on the free tier, which causes the request to fall back to `gemini-2.5-flash` — a different model = no implicit reuse. The caching machinery is correct; the hit ratio in production is bounded by free-tier rate limits, not by the implementation.
+
 ## Limitations
 
 - Review quality depends on Gemini's output — treat findings as a second opinion, not ground truth
 - Very large PRs (>50K tokens) are chunked; some context between files may be lost
-- Auto-bot requires a GitHub PAT with webhook + repo permissions
+- Auto-bot requires a GitHub PAT with **webhook + repo** permissions (classic `repo` scope, or fine-grained with **Webhooks: Read & write**)
 - Inline comments require the PR to be a proper diff (not a force-push that squashed history)
+- Explicit context caches (`caches.create`) are unavailable on the Gemini free tier (`TotalCachedContentStorageTokensPerModelFreeTier limit=0`); the explicit-cache path is feature-flagged for paid keys
 - This is a hackathon project built in a few days. There will be edge cases.
 
 ---
