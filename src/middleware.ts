@@ -19,10 +19,18 @@ const PUBLIC_PREFIXES = [
   '/robots.txt',
 ];
 
+// Exact paths that are fully public (the landing page)
+const PUBLIC_EXACT = ['/'];
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Allow public paths
+  // Allow exact public paths (landing page)
+  if (PUBLIC_EXACT.includes(pathname)) {
+    return NextResponse.next();
+  }
+
+  // Allow public path prefixes
   if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
   }
@@ -44,7 +52,9 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
+  // Exclude the root path and all existing public paths from the matcher so
+  // middleware only runs on auth-required routes, keeping it fast.
   matcher: [
-    '/((?!login|demo|api/auth|api/webhooks|api/cron|api/cache|_next|favicon\\.ico|robots\\.txt).*)',
+    '/((?!$|login|demo|api/auth|api/webhooks|api/cron|api/cache|_next|favicon\\.ico|robots\\.txt).*)',
   ],
 };
