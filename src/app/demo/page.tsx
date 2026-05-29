@@ -312,8 +312,8 @@ export default function DemoPage() {
             Ready to review your own PR?
           </h3>
           <p className="text-gray-400 text-sm mt-2 max-w-md mx-auto leading-relaxed">
-            Sign in with GitHub, paste your Gemini key, and you&apos;re reviewing in 60 seconds.
-            Free Gemini tier is enough for hobby use.
+            Sign in with GitHub, add your free Gemini key, and paste a PR URL.
+            The free Gemini tier is enough for everyday use.
           </p>
           <div className="mt-6 flex flex-wrap gap-3 justify-center">
             <Link
