@@ -71,6 +71,21 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // The webhook handler runs server-side with no user cookie, so it can ONLY
+  // read credentials from KV. A Gemini key that lives only in the iron-session
+  // cookie (e.g. saved before KV was provisioned) makes /settings look complete
+  // while every auto-review silently fails with "No Gemini API key configured".
+  // Require the key in KV up front so the failure is loud here, not silent later.
+  if (!config?.geminiApiKey) {
+    return NextResponse.json(
+      {
+        error:
+          'Your Gemini API key is not stored server-side yet. Open Settings and click Save on your Gemini key so the auto-bot (which runs without your browser session) can use it.',
+      },
+      { status: 400 },
+    );
+  }
+
   try {
     const webhookId = await createRepoWebhook(config.githubPAT, owner, repo, {
       url: getWebhookUrl(request),
