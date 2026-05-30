@@ -6,9 +6,22 @@ import { Suspense, useState } from 'react';
 import Aurora from '@/components/Aurora';
 import Logo from '@/components/Logo';
 
+// Only redirect back to routes that actually exist; a stale/truncated
+// callbackUrl (e.g. "/l") would otherwise 404 right after a successful login.
+const KNOWN_ROUTES = new Set(['/', '/dashboard', '/repositories', '/settings']);
+function safeCallbackUrl(raw: string | null): string {
+  if (!raw) return '/';
+  try {
+    const path = raw.startsWith('http') ? new URL(raw).pathname : raw.split('?')[0].split('#')[0];
+    return KNOWN_ROUTES.has(path) ? path : '/';
+  } catch {
+    return '/';
+  }
+}
+
 function LoginContent() {
   const params = useSearchParams();
-  const callbackUrl = params.get('callbackUrl') ?? '/';
+  const callbackUrl = safeCallbackUrl(params.get('callbackUrl'));
   const error = params.get('error');
   const [signingIn, setSigningIn] = useState(false);
 

@@ -52,6 +52,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
   debug: process.env.NODE_ENV === 'development',
   callbacks: {
+    // Guard every post-auth redirect (sign-in / sign-out / callback). A stale or
+    // truncated callbackUrl (we've seen "/l") would otherwise land the user on a
+    // 404 right after a successful login. Only allow same-origin redirects to
+    // routes that actually exist; anything else falls back to the home page.
+    async redirect({ url, baseUrl }) {
+      const KNOWN = new Set(['/', '/dashboard', '/repositories', '/settings', '/login', '/demo']);
+      try {
+        const u = url.startsWith('/') ? new URL(url, baseUrl) : new URL(url);
+        if (u.origin !== baseUrl) return baseUrl;
+        return KNOWN.has(u.pathname) ? `${u.pathname}${u.search}` : baseUrl;
+      } catch {
+        return baseUrl;
+      }
+    },
     authorized({ auth: session, request }) {
       const isLoggedIn = !!session?.user;
       const isOnLogin = request.nextUrl.pathname === '/login';
