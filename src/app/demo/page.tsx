@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import Aurora from '@/components/Aurora';
 import Logo from '@/components/Logo';
+import ThemeToggle from '@/components/ThemeToggle';
 
 /**
  * /demo — Public, no-auth-required page that shows what a finished review
@@ -152,6 +153,7 @@ export default function DemoPage() {
             </span>
           </Link>
           <div className="flex items-center gap-3">
+            <ThemeToggle />
             <Link href="/login" className="text-sm text-gray-300 hover:text-white transition">
               Sign in
             </Link>

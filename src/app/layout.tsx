@@ -38,7 +38,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark" translate="no">
+    <html lang="en" className="dark" translate="no" suppressHydrationWarning>
+      <head>
+        {/* Set the theme class before paint so there is no light/dark flash. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var t=localStorage.getItem('theme');if(t!=='light'&&t!=='dark'){t='dark';}var r=document.documentElement;r.classList.remove('dark','light');r.classList.add(t);}catch(e){}})();",
+          }}
+        />
+      </head>
       <body className="antialiased bg-gray-950 text-white font-sans notranslate">
         <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:bg-violet-600 focus:text-white focus:px-4 focus:py-2 focus:rounded-br-lg">
           Skip to main content

@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useSession, signOut } from 'next-auth/react';
 import { useState } from 'react';
 import Logo from './Logo';
+import ThemeToggle from './ThemeToggle';
 
 /**
  * Header — sticky top navigation with logo, primary nav, status pill, and user menu.
@@ -92,6 +93,9 @@ export default function Header() {
               )}
             </svg>
           </button>
+
+          {/* Theme toggle */}
+          <ThemeToggle />
 
           {/* Status pill — desktop only */}
           <div

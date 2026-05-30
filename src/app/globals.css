@@ -272,3 +272,93 @@ body {
   outline-offset: 2px;
   border-radius: 8px;
 }
+
+/* ============================================================
+   LIGHT THEME
+   ------------------------------------------------------------
+   The app is built dark-first with hardcoded utility classes, so
+   light mode remaps the high-frequency surfaces/text/borders under
+   `html.light` using attribute selectors ([class~="..."]) — this
+   wins on specificity without editing every component. White text
+   is restored on violet/blue accent buttons so CTAs stay legible.
+   ============================================================ */
+
+/* Remap the design-system tokens so every `bg-[var(--surface-N)]` page root,
+   border token, and shadow flips to light in one place. */
+html.light {
+  --surface-0: #f4f5f8;
+  --surface-1: #ffffff;
+  --surface-2: #eef1f6;
+  --surface-3: #e2e6ee;
+  --border-subtle: rgba(15, 23, 42, 0.06);
+  --border-default: rgba(15, 23, 42, 0.10);
+  --border-strong: rgba(15, 23, 42, 0.16);
+  --shadow-floating: 0 24px 64px -24px rgba(15, 23, 42, 0.18);
+}
+
+html.light body {
+  background: var(--surface-0);
+  color: #0f172a;
+}
+
+/* Smooth the swap */
+body { transition: background-color 0.2s ease, color 0.2s ease; }
+
+/* ── Surfaces ─────────────────────────────────────────────── */
+html.light [class~="bg-gray-950"],
+html.light [class~="bg-gray-950/50"],
+html.light [class~="bg-gray-950/40"] { background-color: #eceef3 !important; }
+
+html.light [class~="bg-gray-900/80"],
+html.light [class~="bg-gray-900/60"],
+html.light [class~="bg-gray-900/50"] { background-color: rgba(255, 255, 255, 0.88) !important; }
+
+html.light [class~="bg-gray-800"],
+html.light [class~="bg-gray-800/50"],
+html.light [class~="bg-gray-800/40"],
+html.light [class~="bg-gray-700"] { background-color: #e7eaf0 !important; }
+
+html.light [class~="bg-white/5"],
+html.light [class~="bg-white/10"],
+html.light [class~="bg-white/[0.02]"],
+html.light [class~="bg-black/30"] { background-color: rgba(15, 23, 42, 0.045) !important; }
+
+/* Header + dropdown translucent surfaces (arbitrary rgba values) */
+html.light [class~="bg-[rgba(5,5,7,0.75)]"],
+html.light [class~="bg-[rgba(5,5,7,0.95)]"] { background-color: rgba(255, 255, 255, 0.82) !important; }
+html.light [class~="bg-[rgba(15,16,24,0.95)]"] { background-color: rgba(255, 255, 255, 0.97) !important; }
+
+/* ── Text ─────────────────────────────────────────────────── */
+html.light [class~="text-white"] { color: #0f172a !important; }
+html.light [class~="text-gray-200"] { color: #1e293b !important; }
+html.light [class~="text-gray-300"] { color: #334155 !important; }
+html.light [class~="text-gray-400"] { color: #475569 !important; }
+html.light [class~="text-gray-500"] { color: #64748b !important; }
+html.light [class~="text-gray-600"] { color: #64748b !important; }
+
+/* Keep white text legible on violet/blue accent buttons + avatars */
+html.light [class*="from-violet"][class~="text-white"],
+html.light [class*="from-violet"] [class~="text-white"],
+html.light [class*="from-blue"][class~="text-white"],
+html.light [class*="from-blue"] [class~="text-white"],
+html.light [class*="bg-violet"][class~="text-white"],
+html.light [class*="bg-violet"] [class~="text-white"] { color: #ffffff !important; }
+
+/* ── Borders ──────────────────────────────────────────────── */
+html.light [class~="border-white"],
+html.light [class~="border-white/20"],
+html.light [class~="border-white/15"] { border-color: #cbd5e1 !important; }
+html.light [class~="border-white/10"],
+html.light [class~="border-white/5"],
+html.light [class~="border-white/[0.08]"],
+html.light [class~="border-white/[0.06]"] { border-color: #e2e8f0 !important; }
+
+/* ── Misc ─────────────────────────────────────────────────── */
+/* Dim the animated aurora glow so it reads as a soft tint on light. */
+html.light .animate-aurora { opacity: 0.18 !important; }
+/* Selection + scrollbar tuned for light */
+html.light ::selection { background: rgba(139, 92, 246, 0.25); color: #0f172a; }
+html.light .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.18); }
+/* Form fields */
+html.light input, html.light textarea, html.light select { color: #0f172a; }
+html.light input::placeholder, html.light textarea::placeholder { color: #94a3b8 !important; }
