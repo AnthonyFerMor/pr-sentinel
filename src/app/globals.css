@@ -305,23 +305,30 @@ html.light body {
 body { transition: background-color 0.2s ease, color 0.2s ease; }
 
 /* ── Surfaces ─────────────────────────────────────────────── */
-html.light [class~="bg-gray-950"],
-html.light [class~="bg-gray-950/50"],
-html.light [class~="bg-gray-950/40"] { background-color: #eceef3 !important; }
-
+/* Crisp white cards pop against the soft-gray page; nested boxes and inputs
+   step down in lightness so they read as distinct layers, not muddy grays. */
 html.light [class~="bg-gray-900/80"],
 html.light [class~="bg-gray-900/60"],
-html.light [class~="bg-gray-900/50"] { background-color: rgba(255, 255, 255, 0.88) !important; }
+html.light [class~="bg-gray-900/50"] { background-color: #ffffff !important; }
 
+html.light [class~="bg-gray-950"],
+html.light [class~="bg-gray-950/50"],
+html.light [class~="bg-gray-950/40"] { background-color: #f1f5f9 !important; }
+
+/* Inputs / toggleable surfaces — near-white, defined by their border. */
 html.light [class~="bg-gray-800"],
 html.light [class~="bg-gray-800/50"],
 html.light [class~="bg-gray-800/40"],
-html.light [class~="bg-gray-700"] { background-color: #e7eaf0 !important; }
+html.light [class~="bg-gray-700"] { background-color: #f8fafc !important; }
 
 html.light [class~="bg-white/5"],
 html.light [class~="bg-white/10"],
 html.light [class~="bg-white/[0.02]"],
-html.light [class~="bg-black/30"] { background-color: rgba(15, 23, 42, 0.045) !important; }
+html.light [class~="bg-black/30"] { background-color: rgba(15, 23, 42, 0.04) !important; }
+
+/* Placeholders need a touch more weight on light input surfaces. */
+html.light [class~="placeholder-gray-500"]::placeholder,
+html.light [class~="placeholder-gray-400"]::placeholder { color: #94a3b8 !important; }
 
 /* Header + dropdown translucent surfaces (arbitrary rgba values) */
 html.light [class~="bg-[rgba(5,5,7,0.75)]"],
