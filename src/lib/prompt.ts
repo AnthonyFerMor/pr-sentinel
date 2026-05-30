@@ -565,6 +565,17 @@ export function formatReviewAsMarkdown(review: ReviewResult): string {
   }
   md += `\n</details>\n\n---\n\n`;
 
+  const noFindings =
+    review.categories.security.length +
+      review.categories.bugs.length +
+      review.categories.performance.length +
+      review.categories.codeQuality.length +
+      review.categories.suggestions.length ===
+    0;
+  if (noFindings) {
+    md += `✅ **No issues found.** PR Sentinel reviewed this diff across its active skills and did not find anything blocking. Looks good to merge.\n\n`;
+  }
+
   const categories = [
     { title: '🔒 Security Issues', items: review.categories.security },
     { title: '🐛 Bugs & Correctness', items: review.categories.bugs },
@@ -810,9 +821,13 @@ export function formatInlineReviewBody(
   }
 
   md += `${review.summary}\n\n`;
-  md += `📍 **${inlineCount}** finding${inlineCount === 1 ? '' : 's'} posted as inline comments below.`;
-  if (leftover.length > 0) {
-    md += ` ${leftover.length} additional finding${leftover.length === 1 ? '' : 's'} listed here (no matching diff line).`;
+  if (totalFindings === 0) {
+    md += `✅ **No issues found.** PR Sentinel reviewed this diff across its active skills (security, bugs, performance, and more) and did not find anything blocking. Looks good to merge.`;
+  } else {
+    md += `📍 **${inlineCount}** finding${inlineCount === 1 ? '' : 's'} posted as inline comments below.`;
+    if (leftover.length > 0) {
+      md += ` ${leftover.length} additional finding${leftover.length === 1 ? '' : 's'} listed here (no matching diff line).`;
+    }
   }
   md += '\n\n';
 

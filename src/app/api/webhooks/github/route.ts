@@ -122,10 +122,13 @@ function handlePullRequest(payload: PullRequestPayload) {
   after(async () => {
     try {
       const creds = owner && repo ? await resolveCredentials(owner, repo) : {};
-      // Reply mode (updateExisting) forces comment-mode (inline reviews can't be edited).
-      // For first-time reviews, default to inline if user opted in (default true).
+      // Match the manual (paste-a-link) flow: the FIRST review of a PR is posted
+      // as line-anchored inline comments (when the user has inline mode on).
+      // runReview then auto-detects a prior review on later pushes and evolves a
+      // single summary comment instead of stacking — inline reviews can't be
+      // edited in place, so re-reviews fall back to comment mode there.
       const outcome = await runReview(prUrl, {
-        updateExisting: true,
+        updateExisting: false,
         skipIfReviewed: true,
         softDeadlineMs: (maxDuration - 5) * 1000,
         githubToken: creds.githubToken,
