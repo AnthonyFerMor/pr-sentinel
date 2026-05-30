@@ -336,13 +336,16 @@ html.light [class~="text-gray-400"] { color: #475569 !important; }
 html.light [class~="text-gray-500"] { color: #64748b !important; }
 html.light [class~="text-gray-600"] { color: #64748b !important; }
 
-/* Keep white text legible on violet/blue accent buttons + avatars */
-html.light [class*="from-violet"][class~="text-white"],
-html.light [class*="from-violet"] [class~="text-white"],
-html.light [class*="from-blue"][class~="text-white"],
-html.light [class*="from-blue"] [class~="text-white"],
-html.light [class*="bg-violet"][class~="text-white"],
-html.light [class*="bg-violet"] [class~="text-white"] { color: #ffffff !important; }
+/* Keep white text legible on SOLID violet/blue accent buttons + avatars.
+   Exact-token matching ([class~]) so subtle tints like from-violet-500/10
+   (which are LIGHT surfaces) are NOT caught and keep their dark text. */
+html.light [class~="from-violet-600"][class~="text-white"],
+html.light [class~="from-violet-600"] [class~="text-white"],
+html.light [class~="from-violet-500"][class~="text-white"],
+html.light [class~="from-violet-500"] [class~="text-white"],
+html.light [class~="bg-violet-600"][class~="text-white"],
+html.light [class~="bg-violet-600"] [class~="text-white"],
+html.light [class~="bg-violet-500"][class~="text-white"] { color: #ffffff !important; }
 
 /* ── Borders ──────────────────────────────────────────────── */
 html.light [class~="border-white"],
@@ -352,6 +355,32 @@ html.light [class~="border-white/10"],
 html.light [class~="border-white/5"],
 html.light [class~="border-white/[0.08]"],
 html.light [class~="border-white/[0.06]"] { border-color: #e2e8f0 !important; }
+
+/* ── Custom design-system utility classes ─────────────────── */
+html.light .glass-card {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+  border-color: var(--border-default);
+  box-shadow: 0 18px 50px -26px rgba(15, 23, 42, 0.16);
+}
+html.light .field-input {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: var(--border-default);
+}
+html.light .field-input:focus { background: #ffffff; }
+html.light .field-input::placeholder { color: rgba(100, 116, 139, 0.7); }
+html.light .btn-secondary { color: #334155; background: rgba(15, 23, 42, 0.04); }
+html.light .btn-secondary:hover:not(:disabled) { background: rgba(15, 23, 42, 0.07); }
+html.light .step-pill {
+  color: #6d28d9;
+  background: rgba(139, 92, 246, 0.10);
+  border-color: rgba(139, 92, 246, 0.25);
+}
+html.light .grid-texture {
+  background-image:
+    linear-gradient(to right, rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+}
 
 /* ── Misc ─────────────────────────────────────────────────── */
 /* Dim the animated aurora glow so it reads as a soft tint on light. */
